@@ -1,0 +1,91 @@
+#!/usr/bin/env python3
+import json
+from pathlib import Path
+
+import requests
+import yaml
+
+import utils
+from israel_map import IsraelMap
+
+TEST = False
+BASE_DIR = Path(__file__).resolve().parent
+
+coords = utils.get_coords()
+
+map_view = IsraelMap(auto_refresh=False)
+known_ids = []
+url_alerts = "https://www.oref.org.il/warningMessages/alert/Alerts.json"
+
+while map_view.is_open():
+
+    if TEST:
+        with (BASE_DIR / "alert_example_2.yaml").open() as handle:
+            alert = yaml.safe_load(handle)
+        alert_text = str(alert)
+    else:
+        res = requests.get(url_alerts)
+        alert_text = res.content.decode("utf-8-sig").strip()
+        if len(alert_text)<=3:
+            if not utils.sleep_with_ui(map_view, 10):break
+            continue
+        alert = json.loads(alert_text)
+
+    id = alert["id"]
+    if id in known_ids:
+        if not utils.sleep_with_ui(map_view, 10):break
+        continue
+    known_ids.append(id)
+    if len(known_ids)>1000:
+       known_ids = known_ids[-1000:] 
+    print( len(alert_text), alert_text )
+    with (BASE_DIR / "last_alert.yaml").open("w") as handle:
+        yaml.safe_dump(alert, handle)
+    localities = alert["data"]
+    for locality in localities:
+        print(locality)
+        coords_key = None
+        normalized_locality = locality
+        if " - " in locality:
+            normalized_locality = locality.split(" - ")[0]
+        normalized_locality = normalized_locality.replace("''", '"')
+        if locality in coords.keys():
+            coords_key = locality 
+        if coords_key is None: 
+           for l in coords.keys():
+               if l.startswith(locality):
+                   coords_key = l  
+        if coords_key is None: 
+           for l in coords.keys():
+               if l.startswith(locality[:2]):
+                   print("   ", l)
+           continue
+        print("   -->", coords_key)
+    
+        print("   ", coords[coords_key])
+        latitude = coords[coords_key]["latitude"] 
+        longitude = coords[coords_key]["longitude"] 
+        match alert["cat"]:
+           case "1":
+              color = "red"
+           case "6":
+              color = "orange"
+           case "10":
+              color = "gray"
+           case _:
+              print("Unknown alert code")
+              print(alert)
+              exit()
+        map_view.draw(latitude, longitude, color, "circle", 8, refresh=False)
+    if not map_view.update():
+        break
+
+map_view.close()
+
+
+#url_history = "https://www.oref.org.il/warningMessages/alert/History/AlertsHistory.json"
+#alerts_history = requests.get(url_history).json()
+#for alert in alerts_history:
+#    print(alert["alertDate"], alert["data"], alert["category"])
+#print(alerts_history[0])
+#exit()
