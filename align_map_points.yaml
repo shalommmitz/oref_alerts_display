@@ -1,0 +1,25 @@
+image: "israel_outline.png"
+padding: 0
+width: 413
+height: 1015
+points:
+  "חיפה":
+    latitude: 32.80357
+    longitude: 35.00874
+    x: 206
+    y: 155
+  "אילת":
+    latitude: 29.5531
+    longitude: 34.94329
+    x: 191
+    y: 994
+  "מטולה":
+    latitude: 33.27861
+    longitude: 35.57714
+    x: 336
+    y: 35
+  "ירושלים":
+    latitude: 31.78292
+    longitude: 35.22017
+    x: 251
+    y: 417

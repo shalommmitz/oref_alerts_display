@@ -1,0 +1,360 @@
+#!/usr/bin/env python3
+"""Interactive helper for collecting true city positions on the outline map."""
+
+from __future__ import annotations
+
+import argparse
+import ast
+import json
+import tkinter as tk
+from pathlib import Path
+
+from israel_map import IsraelMap
+
+
+BASE_DIR = Path(__file__).resolve().parent
+COORDS_PATH = BASE_DIR / "locality_latitude_longitude.yaml"
+DEFAULT_CITIES = ["חיפה", "אילת", "מטולה", "ירושלים"]
+GUIDE_COLORS = (
+    "#d81e1e",
+    "#ff9f1c",
+    "#0057d9",
+    "#1f8b4c",
+    "#7d4cc2",
+    "#7a5c38",
+)
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Click the true positions of reference cities on israel_outline.png.",
+    )
+    parser.add_argument(
+        "cities",
+        nargs="*",
+        default=DEFAULT_CITIES,
+        help="Cities to collect, in order. Defaults to four broad anchor cities.",
+    )
+    parser.add_argument(
+        "-o",
+        "--output",
+        default=str(BASE_DIR / "align_map_points.yaml"),
+        help="File that will receive the captured points.",
+    )
+    return parser.parse_args()
+
+
+def load_coords(path: Path) -> dict[str, dict[str, float]]:
+    """Parse the generated locality lookup without requiring PyYAML."""
+    coords: dict[str, dict[str, float]] = {}
+    current_city: str | None = None
+    current_data: dict[str, float] | None = None
+
+    with path.open(encoding="utf-8") as handle:
+        for raw_line in handle:
+            line = raw_line.rstrip()
+            if not line:
+                continue
+            if raw_line[:1].isspace():
+                if current_city is None or current_data is None:
+                    continue
+                key, _, value = line.strip().partition(":")
+                if key in {"latitude", "longitude"}:
+                    current_data[key] = float(value.strip())
+                continue
+
+            if not line.endswith(":"):
+                continue
+            current_city = ast.literal_eval(line[:-1])
+            current_data = {}
+            coords[current_city] = current_data
+
+    return coords
+
+
+class AlignMapApp:
+    def __init__(self, cities: list[str], output_path: Path) -> None:
+        self.cities = cities
+        self.output_path = output_path
+        self.coords = load_coords(COORDS_PATH)
+        self._validate_cities()
+
+        self.map_view = IsraelMap(auto_refresh=False, padding=0, title="Map Alignment")
+        self.root = self.map_view.root
+        self.canvas = self.map_view.canvas
+        self.status_var = tk.StringVar()
+        self.status_label = tk.Label(
+            self.root,
+            textvariable=self.status_var,
+            anchor="w",
+            justify="left",
+            padx=8,
+            pady=8,
+            font=("TkDefaultFont", 10, "bold"),
+        )
+        self.status_label.pack(before=self.canvas, fill="x")
+        self._configure_scrollable_canvas()
+
+        self.index = 0
+        self.points: dict[str, dict[str, float]] = {}
+        self.saved_items: dict[str, list[int]] = {}
+        self.guide_items: list[int] = []
+        self.current_guide_xy: tuple[float, float] | None = None
+
+        self.canvas.bind("<Button-1>", self._on_click)
+        self.root.bind("<BackSpace>", self._on_undo)
+        self.root.bind("<space>", self._on_accept_estimate)
+        self.root.bind("c", self._on_accept_estimate)
+        self.root.bind("<Return>", self._on_finalize)
+        self.root.bind("<KP_Enter>", self._on_finalize)
+        self.root.bind("<Escape>", self._on_close)
+        self.root.bind("q", self._on_close)
+
+        self._write_output()
+        self._refresh_view()
+
+    def run(self) -> None:
+        self.map_view.run()
+
+    def _validate_cities(self) -> None:
+        missing = [city for city in self.cities if city not in self.coords]
+        if missing:
+            joined = ", ".join(missing)
+            raise SystemExit(f"Unknown city names in {COORDS_PATH.name}: {joined}")
+
+    def _configure_scrollable_canvas(self) -> None:
+        self.canvas.pack_forget()
+
+        screen_height = self.root.winfo_screenheight()
+        viewport_height = min(self.map_view.height, max(300, screen_height - 180))
+        window_width = self.map_view.width + 32
+        window_height = min(screen_height - 80, viewport_height + 90)
+
+        self.canvas_frame = tk.Frame(self.root)
+        self.canvas_frame.pack(fill="both", expand=True)
+
+        self.scrollbar = tk.Scrollbar(
+            self.canvas_frame,
+            orient="vertical",
+            command=self.canvas.yview,
+        )
+        self.scrollbar.pack(side="right", fill="y")
+
+        self.canvas.configure(
+            height=viewport_height,
+            yscrollcommand=self.scrollbar.set,
+            scrollregion=(0, 0, self.map_view.width, self.map_view.height),
+        )
+        self.canvas.pack(side="left", fill="both", expand=True)
+
+        self.root.geometry(f"{window_width}x{window_height}")
+        self.root.minsize(window_width, min(window_height, 400))
+        self.canvas.bind("<MouseWheel>", self._on_mousewheel)
+        self.canvas.bind("<Button-4>", self._on_mousewheel)
+        self.canvas.bind("<Button-5>", self._on_mousewheel)
+
+    def _ensure_visible(self, y: float) -> None:
+        self.root.update_idletasks()
+        viewport_height = max(1, self.canvas.winfo_height())
+        total_height = max(1, self.map_view.height)
+        target_top = max(0.0, min(y - (viewport_height / 2), total_height - viewport_height))
+        self.canvas.yview_moveto(target_top / total_height)
+
+    def _on_mousewheel(self, event: tk.Event[tk.Misc]) -> str:
+        if getattr(event, "num", None) == 4:
+            step = -1
+        elif getattr(event, "num", None) == 5:
+            step = 1
+        else:
+            delta = getattr(event, "delta", 0)
+            step = -1 if delta > 0 else 1
+        self.canvas.yview_scroll(step, "units")
+        return "break"
+
+    def _on_click(self, event: tk.Event[tk.Misc]) -> None:
+        if self.index >= len(self.cities):
+            return
+
+        x = int(round(self.canvas.canvasx(event.x)))
+        y = int(round(self.canvas.canvasy(event.y)))
+        self._record_point(self.cities[self.index], x, y)
+
+    def _on_accept_estimate(self, _event: tk.Event[tk.Misc]) -> str:
+        if self.index >= len(self.cities) or self.current_guide_xy is None:
+            return "break"
+
+        guide_x, guide_y = self.current_guide_xy
+        self._record_point(
+            self.cities[self.index],
+            int(round(guide_x)),
+            int(round(guide_y)),
+        )
+        return "break"
+
+    def _on_finalize(self, _event: tk.Event[tk.Misc]) -> str:
+        if self.index >= len(self.cities):
+            self._write_output()
+            self.map_view.close()
+        return "break"
+
+    def _on_undo(self, _event: tk.Event[tk.Misc]) -> None:
+        if self.index == 0 and not self.points:
+            return
+
+        if self.index == len(self.cities):
+            self.index -= 1
+        elif self.index > 0:
+            self.index -= 1
+
+        city = self.cities[self.index]
+        self.points.pop(city, None)
+        for item_id in self.saved_items.pop(city, []):
+            self.canvas.delete(item_id)
+        self._write_output()
+        self._refresh_view()
+
+    def _on_close(self, _event: tk.Event[tk.Misc] | None = None) -> None:
+        self.map_view.close()
+
+    def _record_point(self, city: str, x: int, y: int) -> None:
+        latlon = self.coords[city]
+        self.points[city] = {
+            "latitude": latlon["latitude"],
+            "longitude": latlon["longitude"],
+            "x": x,
+            "y": y,
+        }
+        self._draw_saved_point(city)
+        self._write_output()
+        self.index += 1
+        self._refresh_view()
+
+    def _refresh_view(self) -> None:
+        for item_id in self.guide_items:
+            self.canvas.delete(item_id)
+        self.guide_items.clear()
+        self.current_guide_xy = None
+
+        if self.index >= len(self.cities):
+            message = (
+                f"Done. Saved {len(self.points)} points to {self.output_path.name}. "
+                "Press Enter to save and quit, or Backspace to revise the last point."
+            )
+            self.status_var.set(message)
+            self.root.title("Map Alignment - Done")
+            print(message)
+            return
+
+        city = self.cities[self.index]
+        latitude = self.coords[city]["latitude"]
+        longitude = self.coords[city]["longitude"]
+        guide_x, guide_y = self.map_view._latlon_to_xy(latitude, longitude)
+        self.current_guide_xy = (guide_x, guide_y)
+        guide_color = GUIDE_COLORS[self.index % len(GUIDE_COLORS)]
+
+        self.guide_items.extend(
+            [
+                self.canvas.create_oval(
+                    guide_x - 7,
+                    guide_y - 7,
+                    guide_x + 7,
+                    guide_y + 7,
+                    outline=guide_color,
+                    width=2,
+                ),
+                self.canvas.create_line(
+                    guide_x - 12,
+                    guide_y,
+                    guide_x + 12,
+                    guide_y,
+                    fill=guide_color,
+                    width=2,
+                ),
+                self.canvas.create_line(
+                    guide_x,
+                    guide_y - 12,
+                    guide_x,
+                    guide_y + 12,
+                    fill=guide_color,
+                    width=2,
+                ),
+                self.canvas.create_text(
+                    guide_x + 10,
+                    guide_y - 12,
+                    text="estimate",
+                    anchor="sw",
+                    fill=guide_color,
+                    font=("TkDefaultFont", 9, "bold"),
+                ),
+            ]
+        )
+
+        message = (
+            f"Click city {self.index + 1}/{len(self.cities)}: {city}\n"
+            "Left click records the true position. "
+            "Press Space if the current estimate is already correct. "
+            "Backspace undoes the previous point."
+        )
+        self.status_var.set(message)
+        self.root.title(f"Map Alignment - Click: {city}")
+        self._ensure_visible(guide_y)
+        print(message.replace("\n", " "))
+        self.map_view.update()
+
+    def _draw_saved_point(self, city: str) -> None:
+        point = self.points[city]
+        x = point["x"]
+        y = point["y"]
+        color = "#222222"
+        self.saved_items[city] = [
+            self.canvas.create_oval(
+                x - 5,
+                y - 5,
+                x + 5,
+                y + 5,
+                fill=color,
+                outline=color,
+            ),
+            self.canvas.create_text(
+                x + 8,
+                y - 8,
+                text=city,
+                anchor="sw",
+                fill=color,
+                font=("TkDefaultFont", 9, "bold"),
+            ),
+        ]
+
+    def _write_output(self) -> None:
+        self.output_path.parent.mkdir(parents=True, exist_ok=True)
+        lines = [
+            f"image: {json.dumps(self._image_name())}",
+            f"padding: {self.map_view.padding}",
+            f"width: {self.map_view._content_width}",
+            f"height: {self.map_view._content_height}",
+            "points:",
+        ]
+        for city in self.cities:
+            point = self.points.get(city)
+            if point is None:
+                continue
+            lines.append(f"  {json.dumps(city, ensure_ascii=False)}:")
+            lines.append(f"    latitude: {point['latitude']}")
+            lines.append(f"    longitude: {point['longitude']}")
+            lines.append(f"    x: {point['x']}")
+            lines.append(f"    y: {point['y']}")
+        self.output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    def _image_name(self) -> str:
+        # The helper uses the default outline image resolved by IsraelMap.
+        return "israel_outline.png"
+
+
+def main() -> None:
+    args = parse_args()
+    app = AlignMapApp(args.cities, Path(args.output).expanduser())
+    app.run()
+
+
+if __name__ == "__main__":
+    main()
