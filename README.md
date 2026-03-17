@@ -19,10 +19,13 @@ The goal of this project is fast local response and reduced dependence on third-
 - `israel_map.py`: standalone map window and drawing module.
 - `utils.py`: shared helpers, including UI-friendly sleep and locality coordinate loading.
 - `map_reference_usage.py`: placeholder example for integrating a custom `fetch_coords()` loop.
+- `align_map`: interactive helper for collecting true city positions on the outline image for calibration.
 - `alert_example_1.yaml`, `alert_example_2.yaml`: sample alert payloads for local testing.
-- `localities.yaml`: source locality dataset.
+- `localities.yaml`: authoritative source locality dataset.
+- `cities.json`: fallback locality dataset used to fill gaps not present in `localities.yaml`.
 - `locality_latitude_longitude.yaml`: generated locality-to-coordinate lookup table used at runtime.
-- `convert_localities.py`: regenerates `locality_latitude_longitude.yaml` from `localities.yaml`.
+- `align_map_points.yaml`: generated calibration control points captured with `align_map`.
+- `convert_localities.py`: regenerates `locality_latitude_longitude.yaml` from `localities.yaml`, backfilling missing names from `cities.json`.
 - `israel_outline.png`: map background image used by `IsraelMap`.
 - `requirements.txt`: pip-installable Python dependencies.
 
@@ -122,9 +125,26 @@ Supported draw parameters:
 - keep the map responsive while waiting
 - run indefinitely until the window closes
 
+## Map Calibration Helper
+
+Use `align_map` to collect control points on the outline image:
+
+```bash
+python3 align_map
+```
+
+What it does:
+
+- shows one city at a time and displays the current estimated position as a guide
+- keeps the map at full scale and makes the helper vertically scrollable
+- lets you left-click the true position, or press `Space` if the estimate is already correct
+- lets you use `Backspace` to revise the previous city
+- after the last city, lets you press `Enter` to save and quit or stay open to fix the last point
+- writes the collected points to `align_map_points.yaml`
+
 ## Data Generation
 
-If `localities.yaml` changes, regenerate the runtime lookup table with:
+If `localities.yaml` or `cities.json` changes, regenerate the runtime lookup table with:
 
 ```bash
 python3 convert_localities.py
@@ -141,8 +161,9 @@ The runtime code expects that generated file to exist in the project directory.
 ## Important Implementation Notes
 
 - The background image is loaded from `israel_outline.png` by default.
-- Coordinate placement uses a calibrated transform on top of the image bounding box. Do not assume the current mapping is a pure geographic projection.
+- Coordinate placement uses a calibrated normalized lat/lon transform fitted against control points collected on the current outline asset. Do not assume the current mapping is a pure geographic projection.
 - All shapes share the same coordinate transform.
+- `localities.yaml` has priority over `cities.json` when generating the runtime locality lookup.
 - The alert endpoint may return UTF-8 BOM-prefixed JSON. `show_alerts` handles this explicitly.
 
 ## License

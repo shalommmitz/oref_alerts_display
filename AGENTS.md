@@ -21,9 +21,12 @@ Current repo contents relevant to runtime behavior:
 - `israel_map.py`: map rendering module
 - `utils.py`: shared helpers
 - `map_reference_usage.py`: reference integration loop with placeholder `fetch_coords()`
+- `align_map`: interactive calibration helper for collecting control points on the outline image
 - `convert_localities.py`: one-shot data conversion script
 - `localities.yaml`: large source dataset of Israeli localities
+- `cities.json`: fallback locality dataset with broader coverage
 - `locality_latitude_longitude.yaml`: generated runtime lookup table
+- `align_map_points.yaml`: generated calibration control points collected with `align_map`
 - `alert_example_1.yaml`, `alert_example_2.yaml`: sample alerts
 - `last_alert.yaml`: generated runtime artifact containing the last processed alert
 - `israel_outline.png`: background image asset used by the map
@@ -67,7 +70,6 @@ Key behaviors:
 - opens a Tk window in `__init__`
 - loads the Israel outline background image from disk
 - optionally resizes and pads the image
-- computes a drawing bounding box from dark pixels in the background image
 - converts latitude/longitude into image coordinates using a calibrated transform
 - draws markers on a `tk.Canvas`
 - supports both blocking and non-blocking usage
@@ -107,12 +109,29 @@ Current geographic validation bounds:
 Current transform details:
 
 - shared by all shapes
-- uses a calibrated image bbox, not a GIS projection
-- includes a leftward x offset and y offset
-- includes latitude-based x shear
-- includes longitude-based y shear
+- uses normalized latitude/longitude inputs
+- is fitted from control points collected on the current `israel_outline.png` asset
+- scales with image resize and respects the configured padding
+- is not a GIS projection
 
 These constants are implementation-critical. If calibration changes, update them in one place inside `_latlon_to_xy()`.
+
+### `align_map`
+
+This is an interactive calibration helper for `IsraelMap`.
+
+It demonstrates:
+
+- full-scale outline display with vertical scrolling
+- city-by-city control point capture
+- a visible estimated marker for the current city
+- keyboard acceptance of the current estimate with `Space`
+- undo of the previous point with `Backspace`
+- explicit save-and-quit after the last city with `Enter`
+
+Output file:
+
+- `align_map_points.yaml`
 
 ### `utils.py`
 
@@ -139,7 +158,13 @@ It demonstrates:
 
 ### `convert_localities.py`
 
-This script converts `localities.yaml` into the runtime lookup table.
+This script converts `localities.yaml` into the runtime lookup table and then
+backfills missing locality names from `cities.json`.
+
+Source priority:
+
+- entries from `localities.yaml` win
+- entries from `cities.json` are used only when the Hebrew locality name does not already exist
 
 Current output format:
 
@@ -161,6 +186,23 @@ Observed structure:
 - list of localities
 - each locality includes metadata and `coordinates.wgs84`
 
+Note:
+
+- authoritative, but not complete
+
+### `cities.json`
+
+Fallback dataset used to fill locality names missing from `localities.yaml`.
+
+Observed structure:
+
+- top-level object containing `cities`
+- each city entry includes Hebrew name plus `lat` and `lng`
+
+Note:
+
+- broader coverage than `localities.yaml`, but treated as lower-priority fallback
+
 ### `locality_latitude_longitude.yaml`
 
 Generated runtime lookup table used by `show_alerts`.
@@ -170,6 +212,16 @@ Observed structure:
 - YAML mapping
 - keys are Hebrew locality names
 - values contain `latitude` and `longitude`
+
+### `align_map_points.yaml`
+
+Generated calibration file used as the source of map control points.
+
+Observed structure:
+
+- image metadata: `image`, `padding`, `width`, `height`
+- `points` mapping keyed by Hebrew city name
+- each point contains `latitude`, `longitude`, `x`, `y`
 
 ### Sample alert files
 
@@ -207,6 +259,8 @@ Implication:
 
 Canonical names in this repository:
 
+- `cities.json`
+- `align_map_points.yaml`
 - `israel_outline.png`
 - `locality_latitude_longitude.yaml`
 - `alert_example_1.yaml`
@@ -230,6 +284,7 @@ Canonical names in this repository:
 - The viewer requires a graphical display to actually show the Tk window.
 - Headless environments need an X server or equivalent display backend.
 - Coordinate placement is empirically calibrated to the current image asset, not geodetically accurate.
+- The current transform is fitted from a small calibration sample; adding more interior control points should improve overall placement.
 - `show_alerts` depends on the current working directory for local file discovery.
 - Locality matching is based on exact match plus prefix heuristics; ambiguous or renamed localities may fail to resolve.
 - Unknown alert categories are fatal.
@@ -247,6 +302,7 @@ If dependencies are available, also verify:
 - `import israel_map`
 - `import requests`
 - `import yaml`
+- `python3 align_map --help`
 - `show_alerts` with `TEST = True`
 - one manual visual check of known reference localities on the map
 
@@ -255,7 +311,7 @@ If dependencies are available, also verify:
 These are not implemented yet, but they are natural future work:
 
 - make file loading path-safe by resolving relative to the module directory
-- formalize calibration with reference control points instead of hard-coded offsets
+- refit the map transform from a larger, more geographically diverse control-point set
 - add automated tests for coordinate validation and alert parsing
 - package runtime dependencies in a reproducible environment file
 - handle unknown alert categories without exiting
