@@ -4,12 +4,16 @@ from pathlib import Path
 
 import requests
 import yaml
+import os
 
 import utils
 from utils import log
 from israel_map import IsraelMap
 
-TEST = False
+TEST = True
+
+if TEST:
+   log("TEST MODE ON")
 
 BASE_DIR = Path(__file__).resolve().parent
 
@@ -19,10 +23,16 @@ map_view = IsraelMap(auto_refresh=False)
 known_ids = []
 url_alerts = "https://www.oref.org.il/warningMessages/alert/Alerts.json"
 
+biggest_alert_size = 0
+if os.path.isfile("biggest_alert.yaml"):
+     biggest_alert_size = os.path.getsize("biggest_alert.yaml")
+
+
 while map_view.is_open():
 
     if TEST:
-        with (BASE_DIR / "alert_example_2.yaml").open() as handle:
+        #with (BASE_DIR / "alert_example_2.yaml").open() as handle:
+        with (BASE_DIR / "last_alert.yaml").open() as handle:
             alert = yaml.safe_load(handle)
         alert_text = str(alert)
     else:
@@ -59,7 +69,10 @@ while map_view.is_open():
         continue
 
     # Alert is valid and was not seen before. Handle it
-    log("Alert contests:" +str( alert))
+    if len(str(alert))>biggest_alert_size:
+        with (BASE_DIR / "biggest_alert.yaml").open("w") as handle:
+            yaml.safe_dump(alert, handle)
+    log("Alert contents:" +str( alert))
     known_ids.append(id)
     if len(known_ids)>1000:
        known_ids = known_ids[-1000:] 
