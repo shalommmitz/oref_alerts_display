@@ -6,9 +6,11 @@ import requests
 import yaml
 
 import utils
+from utils import log
 from israel_map import IsraelMap
 
 TEST = False
+
 BASE_DIR = Path(__file__).resolve().parent
 
 coords = utils.get_coords()
@@ -24,17 +26,40 @@ while map_view.is_open():
             alert = yaml.safe_load(handle)
         alert_text = str(alert)
     else:
-        res = requests.get(url_alerts)
+        try:
+            res = requests.get(url_alerts)
+        except:
+            log("Error: could not fetch data (probably no network)")
+            if not utils.sleep_with_ui(map_view, 10):break
+            continue
+        if res.status_code !=200:
+            log("")
+            log(f"Error: Wrong response code: {res.status_code}")
+            log("")
+            if not utils.sleep_with_ui(map_view, 10):break
+            continue
         alert_text = res.content.decode("utf-8-sig").strip()
+        log("Alert fetched")
         if len(alert_text)<=3:
             if not utils.sleep_with_ui(map_view, 10):break
             continue
-        alert = json.loads(alert_text)
+        try:
+            alert = json.loads(alert_text)
+        except:
+            log("Error: could not parse data (json load failed)")
+            log("Problem msg:")
+            log(alert_text)
+            if not utils.sleep_with_ui(map_view, 10):break
+            continue
 
+    # Detect and handle seen-before alerts 
     id = alert["id"]
     if id in known_ids:
         if not utils.sleep_with_ui(map_view, 10):break
         continue
+
+    # Alert is valid and was not seen before. Handle it
+    log("Alert contests:" +str( alert))
     known_ids.append(id)
     if len(known_ids)>1000:
        known_ids = known_ids[-1000:] 
@@ -43,7 +68,8 @@ while map_view.is_open():
         yaml.safe_dump(alert, handle)
     localities = alert["data"]
     for locality in localities:
-        print(locality)
+       
+        # Attempt to find coordinates of current locality. Skip if not found
         coords_key = None
         normalized_locality = locality
         if " - " in locality:
@@ -56,13 +82,13 @@ while map_view.is_open():
                if l.startswith(locality):
                    coords_key = l  
         if coords_key is None: 
-           for l in coords.keys():
-               if l.startswith(locality[:2]):
-                   print("   ", l)
-           continue
-        print("   -->", coords_key)
+            print(locality)
+            for l in coords.keys():
+                if l.startswith(locality[:2]):
+                    print("   ", l)
+            continue
     
-        print("   ", coords[coords_key])
+        #print("   ", coords[coords_key])
         latitude = coords[coords_key]["latitude"] 
         longitude = coords[coords_key]["longitude"] 
         match alert["cat"]:
