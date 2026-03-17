@@ -1,10 +1,17 @@
 import time
 from pathlib import Path
+from datetime import datetime
 
 import yaml
 from israel_map import IsraelMap
 
 BASE_DIR = Path(__file__).resolve().parent
+
+def log(msg):
+    now = datetime.now().strftime("%d%B_%H%M.%S")
+    open("log.txt", 'a').write(f"{now} {msg}\n")
+    print(f"\r{" "*80}", end="")
+    print(f"\r{now} {msg[:80]}", end="")
 
 def sleep_with_ui(map_view: IsraelMap, seconds: float) -> bool:
     """Sleep in small steps so the Tk window stays responsive."""
