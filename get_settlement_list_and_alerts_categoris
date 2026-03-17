@@ -1,1 +1,3 @@
+wegt https://www.oref.org.il/alerts/alertCategories.json
 wget https://github.com/arikw/israeli-localities/blob/master/dist/localities.yaml
+wget https://www.tzevaadom.co.il/static/cities.json

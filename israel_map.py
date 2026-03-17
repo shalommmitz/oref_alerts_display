@@ -42,10 +42,6 @@ class IsraelMap:
         "gray": "#d3d3d3",
         "orange": "#ff9f1c",
     }
-    _X_OFFSET = -8.0
-    _LATITUDE_X_SHEAR = 4.5
-    _LONGITUDE_Y_SHEAR = 18.0
-    _Y_OFFSET = 10.0
     _IMAGE_CANDIDATES = (
         "israel_outline.png",
         "Israel_outline.png",
@@ -78,13 +74,14 @@ class IsraelMap:
                 (target_width, target_height),
                 Image.Resampling.LANCZOS,
             )
+        self._content_width = self._background_image.width
+        self._content_height = self._background_image.height
         if self.padding:
             self._background_image = self._pad_image(self._background_image, self.padding)
 
         self.width = self._background_image.width
         self.height = self._background_image.height
         self.background_color = self._rgb_to_hex(self._background_image.getpixel((0, 0)))
-        self._map_bbox = self._detect_map_bbox(self._background_image)
 
         self.root = tk.Tk()
         self.root.title(self.title)
@@ -195,32 +192,39 @@ class IsraelMap:
             self.root.destroy()
 
     def _latlon_to_xy(self, lat: float, lon: float) -> tuple[float, float]:
-        left, top, right, bottom = self._map_bbox
-        lon_ratio = (lon - self.bounds.min_lon) / (self.bounds.max_lon - self.bounds.min_lon)
-        lat_ratio = (self.bounds.max_lat - lat) / (self.bounds.max_lat - self.bounds.min_lat)
-        x = left + lon_ratio * (right - left)
-        y = top + lat_ratio * (bottom - top)
-        x -= self._LATITUDE_X_SHEAR * (lat - self.bounds.min_lat)
-        x += self._X_OFFSET
-        y += self._LONGITUDE_Y_SHEAR * (lon - self.bounds.min_lon)
-        y += self._Y_OFFSET
+        # Calibration is fitted against control cities collected with align_map on
+        # the 413x1015 outline asset. The normalized geographic basis keeps the
+        # transform stable and lets it scale cleanly when the image is resized.
+        lat_center = 31.3655
+        lat_scale = 1.9155
+        lon_center = 35.04
+        lon_scale = 0.84
+        x_coeffs = (
+            0.513547718710026,
+            0.002805123908288,
+            0.42945404405493,
+            0.031587125912652,
+        )
+        y_coeffs = (
+            0.517929081179612,
+            -0.485313586248668,
+            -0.013948572704905,
+            0.014398953018679,
+        )
+
+        lat_norm = (lat - lat_center) / lat_scale
+        lon_norm = (lon - lon_center) / lon_scale
+        features = (
+            1.0,
+            lat_norm,
+            lon_norm,
+            lat_norm * lon_norm,
+        )
+        x_ratio = sum(coeff * feature for coeff, feature in zip(x_coeffs, features))
+        y_ratio = sum(coeff * feature for coeff, feature in zip(y_coeffs, features))
+        x = self.padding + (x_ratio * self._content_width)
+        y = self.padding + (y_ratio * self._content_height)
         return x, y
-
-    def _detect_map_bbox(self, image: Image.Image) -> tuple[int, int, int, int]:
-        grayscale = image.convert("L")
-        threshold = 245
-        dark_pixels = [
-            (x, y)
-            for y in range(grayscale.height)
-            for x in range(grayscale.width)
-            if grayscale.getpixel((x, y)) < threshold
-        ]
-        if not dark_pixels:
-            return 0, 0, self.width - 1, self.height - 1
-
-        xs = [x for x, _ in dark_pixels]
-        ys = [y for _, y in dark_pixels]
-        return min(xs), min(ys), max(xs), max(ys)
 
     def _create_photo_image(self, image: Image.Image) -> tk.PhotoImage:
         buffer = io.BytesIO()
