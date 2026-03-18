@@ -10,7 +10,7 @@ import utils
 from utils import log
 from israel_map import IsraelMap
 
-TEST = True
+TEST = False
 
 if TEST:
    log("TEST MODE ON")
