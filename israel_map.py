@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import base64
+import ast
 import io
+import json
 import tkinter as tk
+from datetime import datetime
 from dataclasses import dataclass
 from pathlib import Path
 
-from PIL import Image
+from PIL import Image, ImageDraw
 
 
 @dataclass(frozen=True)
@@ -17,6 +20,101 @@ class _MapBounds:
     max_lat: float = 33.281
     min_lon: float = 34.20
     max_lon: float = 35.88
+
+
+@dataclass(frozen=True)
+class _ControlButtonSpec:
+    label: str
+    tooltip: str
+    enabled: bool = True
+    action: str | None = None
+
+
+@dataclass(frozen=True)
+class _DrawCommand:
+    latitude: float
+    longitude: float
+    color: str
+    shape: str
+    size: int
+
+
+class _Tooltip:
+    def __init__(
+        self,
+        widgets: tuple[tk.Widget, ...],
+        text: str,
+        *,
+        background: str,
+        foreground: str,
+        border: str,
+    ) -> None:
+        self.widgets = widgets
+        self.text = text
+        self.background = background
+        self.foreground = foreground
+        self.border = border
+        self._tip_window: tk.Toplevel | None = None
+        self._after_id: str | None = None
+        self._anchor_widget: tk.Widget | None = None
+
+        for widget in widgets:
+            widget.bind("<Enter>", self._on_enter, add="+")
+            widget.bind("<Leave>", self._on_leave, add="+")
+            widget.bind("<ButtonPress>", self._on_leave, add="+")
+
+    def _on_enter(self, event: tk.Event) -> None:
+        self._anchor_widget = event.widget
+        self._schedule()
+
+    def _on_leave(self, _event: tk.Event) -> None:
+        self._cancel()
+        self._hide()
+
+    def _schedule(self) -> None:
+        self._cancel()
+        widget = self._anchor_widget
+        if widget is None:
+            return
+        self._after_id = widget.after(180, self._show)
+
+    def _cancel(self) -> None:
+        widget = self._anchor_widget
+        if widget is not None and self._after_id is not None:
+            widget.after_cancel(self._after_id)
+        self._after_id = None
+
+    def _show(self) -> None:
+        if self._tip_window is not None:
+            return
+        widget = self._anchor_widget
+        if widget is None or not widget.winfo_exists():
+            return
+
+        x = widget.winfo_rootx() + max(8, widget.winfo_width() - 6)
+        y = widget.winfo_rooty() + widget.winfo_height() + 8
+        self._tip_window = tk.Toplevel(widget)
+        self._tip_window.wm_overrideredirect(True)
+        self._tip_window.wm_geometry(f"+{x}+{y}")
+        label = tk.Label(
+            self._tip_window,
+            text=self.text,
+            bg=self.background,
+            fg=self.foreground,
+            bd=1,
+            relief="solid",
+            highlightthickness=1,
+            highlightbackground=self.border,
+            padx=10,
+            pady=5,
+            font=("TkDefaultFont", 9),
+        )
+        label.pack()
+
+    def _hide(self) -> None:
+        if self._tip_window is not None:
+            self._tip_window.destroy()
+            self._tip_window = None
 
 
 class IsraelMap:
@@ -28,6 +126,7 @@ class IsraelMap:
         "blue",
         "red",
         "green",
+        "yellow",
         "gray",
         "orange",
         "background",
@@ -39,6 +138,7 @@ class IsraelMap:
         "blue": "#0057d9",
         "red": "#d81e1e",
         "green": "#1f8b4c",
+        "yellow": "#d9b11f",
         "gray": "#d3d3d3",
         "orange": "#ff9f1c",
     }
@@ -48,6 +148,28 @@ class IsraelMap:
         "israel_outline.jpg",
         "israel_outline.jpeg",
     )
+    _CONTROL_BUTTONS = (
+        _ControlButtonSpec("Clear", "Clear Map", True, "clear_map"),
+        _ControlButtonSpec("Save", "Save Map Image", True, "save_map_dialog"),
+        _ControlButtonSpec("Exit", "Close", True, "close_app"),
+    )
+    _CONTROL_COLORS = {
+        "panel_bg": "#d8dbde",
+        "panel_border": "#a7adb2",
+        "button_bg": "#eceeef",
+        "button_fg": "#394047",
+        "button_active_bg": "#f6f7f8",
+        "button_active_fg": "#20262c",
+        "button_disabled_bg": "#c9cdd0",
+        "button_disabled_fg": "#7b8288",
+        "tooltip_bg": "#454b51",
+        "tooltip_fg": "#f5f6f7",
+        "tooltip_border": "#5a6168",
+    }
+    _SETTINGS_FILENAME = "settings.yaml"
+    _DEFAULT_SAVE_INCLUDE_DATETIME = True
+    _DEFAULT_SAVE_BASE_NAME = "alerts_map"
+    _DEFAULT_SAVE_SCALE = "100"
 
     def __init__(
         self,
@@ -57,6 +179,7 @@ class IsraelMap:
         image_path: str | Path | None = None,
         auto_refresh: bool = True,
         padding: int = 20,
+        show_controls: bool = False,
     ) -> None:
         self.title = title
         self.auto_refresh = auto_refresh
@@ -64,6 +187,15 @@ class IsraelMap:
         self.bounds = _MapBounds()
         self._closed = False
         self._drawn_items: list[int] = []
+        self._drawn_markers: list[_DrawCommand] = []
+        self._control_window_id: int | None = None
+        self._tooltips: list[_Tooltip] = []
+        self._modal_dialog: tk.Toplevel | None = None
+        self._log_time_background_id: int | None = None
+        self._log_time_text_id: int | None = None
+        self._save_include_datetime_var: tk.BooleanVar | None = None
+        self._save_base_name_var: tk.StringVar | None = None
+        self._save_scale_var: tk.StringVar | None = None
 
         resolved_image_path = self._resolve_background_path(image_path)
         self._background_image = Image.open(resolved_image_path).convert("RGB")
@@ -86,6 +218,9 @@ class IsraelMap:
         self.root = tk.Tk()
         self.root.title(self.title)
         self.root.protocol("WM_DELETE_WINDOW", self.close)
+        self._save_include_datetime_var = tk.BooleanVar(master=self.root, value=True)
+        self._save_base_name_var = tk.StringVar(master=self.root, value="alerts_map")
+        self._save_scale_var = tk.StringVar(master=self.root, value="100")
         self.canvas = tk.Canvas(
             self.root,
             width=self.width,
@@ -97,6 +232,8 @@ class IsraelMap:
 
         self._background_photo = self._create_photo_image(self._background_image)
         self.canvas.create_image(0, 0, anchor="nw", image=self._background_photo)
+        if show_controls:
+            self._create_controls_overlay()
         if self.auto_refresh:
             self.process_events()
 
@@ -145,6 +282,8 @@ class IsraelMap:
             )
 
         self._drawn_items.append(item_id)
+        self._drawn_markers.append(_DrawCommand(latitude, longitude, color, shape, size))
+        self._raise_overlays()
         if refresh is None:
             refresh = self.auto_refresh
         if refresh:
@@ -155,6 +294,7 @@ class IsraelMap:
         for item_id in self._drawn_items:
             self.canvas.delete(item_id)
         self._drawn_items.clear()
+        self._drawn_markers.clear()
         if refresh is None:
             refresh = self.auto_refresh
         if refresh:
@@ -187,9 +327,28 @@ class IsraelMap:
 
     def close(self) -> None:
         """Close the window."""
-        if not self._closed and self.root.winfo_exists():
-            self._closed = True
+        if self._closed:
+            return
+
+        self._closed = True
+        if self._modal_dialog is not None and self._modal_dialog.winfo_exists():
+            self._close_modal_dialog()
+        if not self.root.winfo_exists():
+            return
+
+        try:
+            self.root.withdraw()
+            self.root.after_idle(self._finalize_close)
+        except tk.TclError:
+            self._finalize_close()
+
+    def _finalize_close(self) -> None:
+        if not self.root.winfo_exists():
+            return
+        try:
             self.root.destroy()
+        except tk.TclError:
+            pass
 
     def _latlon_to_xy(self, lat: float, lon: float) -> tuple[float, float]:
         # Calibration is fitted against control cities collected with align_map on
@@ -231,6 +390,463 @@ class IsraelMap:
         image.save(buffer, format="PNG")
         encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
         return tk.PhotoImage(data=encoded)
+
+    def _create_controls_overlay(self) -> None:
+        colors = self._CONTROL_COLORS
+        control_bar = tk.Frame(
+            self.canvas,
+            bg=colors["panel_bg"],
+            bd=0,
+            highlightthickness=1,
+            highlightbackground=colors["panel_border"],
+            padx=6,
+            pady=6,
+        )
+
+        last_index = len(self._CONTROL_BUTTONS) - 1
+        for index, spec in enumerate(self._CONTROL_BUTTONS):
+            slot = tk.Frame(control_bar, bg=colors["panel_bg"])
+            slot.pack(side="left", padx=(0, 8 if index < last_index else 0))
+            button = tk.Button(
+                slot,
+                text=spec.label,
+                command=self._resolve_control_command(spec.action),
+                state=tk.NORMAL if spec.enabled else tk.DISABLED,
+                width=6,
+                padx=8,
+                pady=3,
+                bd=0,
+                relief="flat",
+                font=("TkDefaultFont", 10, "bold"),
+                bg=colors["button_bg"] if spec.enabled else colors["button_disabled_bg"],
+                fg=colors["button_fg"],
+                activebackground=colors["button_active_bg"],
+                activeforeground=colors["button_active_fg"],
+                disabledforeground=colors["button_disabled_fg"],
+                highlightthickness=0,
+                cursor="hand2" if spec.enabled else "arrow",
+                takefocus=False,
+            )
+            button.pack()
+            self._tooltips.append(
+                _Tooltip(
+                    (slot, button),
+                    spec.tooltip,
+                    background=colors["tooltip_bg"],
+                    foreground=colors["tooltip_fg"],
+                    border=colors["tooltip_border"],
+                )
+            )
+
+        self._control_window_id = self.canvas.create_window(
+            8,
+            8,
+            anchor="nw",
+            window=control_bar,
+        )
+        self._raise_controls()
+
+    def _raise_controls(self) -> None:
+        self._raise_overlays()
+
+    def _raise_overlays(self) -> None:
+        if self._log_time_background_id is not None:
+            self.canvas.tag_raise(self._log_time_background_id)
+        if self._log_time_text_id is not None:
+            self.canvas.tag_raise(self._log_time_text_id)
+        if self._control_window_id is not None:
+            self.canvas.tag_raise(self._control_window_id)
+
+    def set_log_timestamp(self, timestamp: str) -> None:
+        if self._closed or not self.root.winfo_exists():
+            return
+
+        x = 10
+        y = self.height - 8
+        if self._log_time_background_id is None:
+            self._log_time_background_id = self.canvas.create_rectangle(
+                0,
+                0,
+                0,
+                0,
+                fill="#e8ebee",
+                outline="#a7adb2",
+                width=1,
+            )
+        if self._log_time_text_id is None:
+            self._log_time_text_id = self.canvas.create_text(
+                x,
+                y,
+                text=timestamp,
+                anchor="sw",
+                fill="#394047",
+                font=("TkDefaultFont", 10, "bold"),
+            )
+        else:
+            self.canvas.coords(self._log_time_text_id, x, y)
+            self.canvas.itemconfigure(self._log_time_text_id, text=timestamp)
+
+        bbox = self.canvas.bbox(self._log_time_text_id)
+        if bbox is not None:
+            self.canvas.coords(
+                self._log_time_background_id,
+                bbox[0] - 6,
+                bbox[1] - 4,
+                bbox[2] + 6,
+                bbox[3] + 4,
+            )
+        self._raise_overlays()
+
+    def _resolve_control_command(self, action: str | None) -> callable:
+        if action == "clear_map":
+            return self._clear_map_control
+        if action == "save_map_dialog":
+            return self._open_save_dialog_control
+        if action == "close_app":
+            return self._close_app_control
+        return self._noop_control
+
+    def _clear_map_control(self) -> None:
+        self.reset(refresh=True)
+
+    def _open_save_dialog_control(self) -> None:
+        if self._modal_dialog is not None and self._modal_dialog.winfo_exists():
+            self._modal_dialog.lift()
+            self._modal_dialog.focus_force()
+            return
+
+        self._load_save_settings()
+        colors = self._CONTROL_COLORS
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Save Map Image")
+        dialog.transient(self.root)
+        dialog.resizable(False, False)
+        dialog.configure(bg="#eef0f2")
+        dialog.protocol("WM_DELETE_WINDOW", self._close_modal_dialog)
+
+        body = tk.Frame(dialog, bg="#eef0f2", padx=18, pady=16)
+        body.pack(fill="both", expand=True)
+
+        form_panel = tk.Frame(
+            body,
+            width=260,
+            height=150,
+            bg="#f7f8f9",
+            highlightthickness=1,
+            highlightbackground="#c8cdd2",
+            padx=14,
+            pady=14,
+        )
+        form_panel.pack(fill="both", expand=True)
+        form_panel.pack_propagate(False)
+
+        base_name_label = tk.Label(
+            form_panel,
+            text="Base Name",
+            anchor="w",
+            bg="#f7f8f9",
+            fg="#5a6168",
+            pady=0,
+            font=("TkDefaultFont", 9, "bold"),
+        )
+        base_name_label.pack(fill="x", pady=(0, 4))
+
+        base_name_entry = tk.Entry(
+            form_panel,
+            textvariable=self._save_base_name_var,
+            bd=0,
+            relief="flat",
+            highlightthickness=1,
+            highlightbackground="#c8cdd2",
+            highlightcolor="#9fa6ad",
+            bg="#ffffff",
+            fg=colors["button_active_fg"],
+            insertbackground=colors["button_active_fg"],
+            font=("TkDefaultFont", 10),
+        )
+        base_name_entry.pack(fill="x")
+
+        include_checkbox = tk.Checkbutton(
+            form_panel,
+            text="Include Data/Time",
+            variable=self._save_include_datetime_var,
+            anchor="w",
+            bg="#f7f8f9",
+            fg=colors["button_fg"],
+            activebackground="#f7f8f9",
+            activeforeground=colors["button_active_fg"],
+            selectcolor="#f1f3f5",
+            highlightthickness=0,
+            bd=0,
+            padx=0,
+            pady=0,
+            font=("TkDefaultFont", 10),
+        )
+        include_checkbox.pack(fill="x", pady=(14, 0))
+
+        scale_row = tk.Frame(form_panel, bg="#f7f8f9")
+        scale_row.pack(fill="x", pady=(14, 0))
+
+        scale_label = tk.Label(
+            scale_row,
+            text="Scale",
+            anchor="w",
+            bg="#f7f8f9",
+            fg="#5a6168",
+            font=("TkDefaultFont", 9, "bold"),
+        )
+        scale_label.pack(side="left")
+
+        scale_entry = tk.Entry(
+            scale_row,
+            textvariable=self._save_scale_var,
+            width=6,
+            justify="right",
+            bd=0,
+            relief="flat",
+            highlightthickness=1,
+            highlightbackground="#c8cdd2",
+            highlightcolor="#9fa6ad",
+            bg="#ffffff",
+            fg=colors["button_active_fg"],
+            insertbackground=colors["button_active_fg"],
+            font=("TkDefaultFont", 10),
+        )
+        scale_entry.pack(side="left", padx=(12, 6))
+
+        scale_suffix = tk.Label(
+            scale_row,
+            text="%",
+            anchor="w",
+            bg="#f7f8f9",
+            fg=colors["button_fg"],
+            font=("TkDefaultFont", 10),
+        )
+        scale_suffix.pack(side="left")
+
+        button_row = tk.Frame(body, bg="#eef0f2")
+        button_row.pack(fill="x", pady=(14, 0))
+
+        cancel_button = tk.Button(
+            button_row,
+            text="Cancel",
+            command=self._close_modal_dialog,
+            width=9,
+            bd=0,
+            relief="flat",
+            font=("TkDefaultFont", 10, "bold"),
+            bg="#d6dade",
+            fg=colors["button_fg"],
+            activebackground="#e0e4e7",
+            activeforeground=colors["button_active_fg"],
+            highlightthickness=0,
+            takefocus=False,
+        )
+        cancel_button.pack(side="right")
+
+        ok_button = tk.Button(
+            button_row,
+            text="Ok",
+            command=self._handle_save_dialog_ok,
+            width=9,
+            bd=0,
+            relief="flat",
+            font=("TkDefaultFont", 10, "bold"),
+            bg=colors["button_bg"],
+            fg=colors["button_fg"],
+            activebackground=colors["button_active_bg"],
+            activeforeground=colors["button_active_fg"],
+            highlightthickness=0,
+            takefocus=False,
+        )
+        ok_button.pack(side="right", padx=(0, 8))
+
+        dialog.update_idletasks()
+        root_x = self.root.winfo_rootx()
+        root_y = self.root.winfo_rooty()
+        root_width = self.root.winfo_width()
+        root_height = self.root.winfo_height()
+        dialog_width = dialog.winfo_width()
+        dialog_height = dialog.winfo_height()
+        x = root_x + max(0, (root_width - dialog_width) // 2)
+        y = root_y + max(0, (root_height - dialog_height) // 2)
+        dialog.geometry(f"+{x}+{y}")
+
+        self._modal_dialog = dialog
+        dialog.grab_set()
+        base_name_entry.focus_force()
+        base_name_entry.icursor("end")
+
+    def _close_modal_dialog(self) -> None:
+        if self._modal_dialog is None:
+            return
+        dialog = self._modal_dialog
+        self._modal_dialog = None
+        if dialog.winfo_exists():
+            dialog.grab_release()
+            dialog.destroy()
+
+    def _close_app_control(self) -> None:
+        self.close()
+
+    def _handle_save_dialog_ok(self) -> None:
+        self._save_settings_to_disk()
+        self._save_map_image_to_disk()
+        self._close_modal_dialog()
+
+    def _load_save_settings(self) -> None:
+        self._apply_save_settings(
+            include_datetime=self._DEFAULT_SAVE_INCLUDE_DATETIME,
+            base_name=self._DEFAULT_SAVE_BASE_NAME,
+            scale=self._DEFAULT_SAVE_SCALE,
+        )
+
+        path = Path.cwd() / self._SETTINGS_FILENAME
+        if not path.exists():
+            return
+
+        try:
+            loaded = self._parse_settings_text(path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            self._log_failure(f"Could not load settings from {path}", exc)
+            return
+
+        self._apply_save_settings(
+            include_datetime=loaded.get("include_datetime", self._DEFAULT_SAVE_INCLUDE_DATETIME),
+            base_name=loaded.get("base_name", self._DEFAULT_SAVE_BASE_NAME),
+            scale=loaded.get("scale_percent", self._DEFAULT_SAVE_SCALE),
+        )
+
+    def _save_settings_to_disk(self) -> None:
+        path = Path.cwd() / self._SETTINGS_FILENAME
+        settings_text = self._build_settings_text()
+        try:
+            path.write_text(settings_text, encoding="utf-8")
+        except Exception as exc:
+            self._log_failure(f"Could not save settings to {path}", exc)
+
+    def _save_map_image_to_disk(self) -> None:
+        try:
+            image = self._render_current_map_image()
+            scale_percent = self._parse_scale_percent(self._save_scale_value())
+            if scale_percent != 100.0:
+                scaled_width = max(1, int(round(image.width * scale_percent / 100.0)))
+                scaled_height = max(1, int(round(image.height * scale_percent / 100.0)))
+                image = image.resize((scaled_width, scaled_height), Image.Resampling.LANCZOS)
+
+            output_path = Path.cwd() / self._build_output_filename()
+            image.save(output_path, format="PNG")
+        except Exception as exc:
+            self._log_failure("Could not save map image", exc)
+
+    def _render_current_map_image(self) -> Image.Image:
+        image = self._background_image.copy()
+        draw = ImageDraw.Draw(image)
+        for marker in self._drawn_markers:
+            x, y = self._latlon_to_xy(marker.latitude, marker.longitude)
+            color = self._resolve_draw_color(marker.color)
+            half = marker.size / 2
+            if marker.shape == "circle":
+                draw.ellipse(
+                    (x - half, y - half, x + half, y + half),
+                    fill=color,
+                    outline=color,
+                )
+            elif marker.shape == "square":
+                draw.rectangle(
+                    (x - half, y - half, x + half, y + half),
+                    fill=color,
+                    outline=color,
+                )
+            else:
+                draw.rectangle(
+                    (x - half, y - (marker.size * 0.30), x + half, y + (marker.size * 0.30)),
+                    fill=color,
+                    outline=color,
+                )
+        return image
+
+    def _build_output_filename(self) -> str:
+        base_name = self._save_base_name_value().strip()
+        if not base_name:
+            raise ValueError("Base Name is empty")
+
+        if base_name.lower().endswith(".png"):
+            base_name = base_name[:-4]
+
+        if self._save_include_datetime_value():
+            timestamp = datetime.now().strftime("%d%b%Y_%H_%M")
+            return f"{base_name}_{timestamp}.png"
+        return f"{base_name}.png"
+
+    def _parse_scale_percent(self, scale_text: str) -> float:
+        scale_percent = float(scale_text.strip())
+        if scale_percent <= 0:
+            raise ValueError("Scale must be greater than zero")
+        return scale_percent
+
+    def _build_settings_text(self) -> str:
+        include_datetime = "true" if self._save_include_datetime_value() else "false"
+        base_name = json.dumps(self._save_base_name_value(), ensure_ascii=False)
+        scale_percent = json.dumps(self._save_scale_value())
+        return (
+            f"include_datetime: {include_datetime}\n"
+            f"base_name: {base_name}\n"
+            f"scale_percent: {scale_percent}\n"
+        )
+
+    def _parse_settings_text(self, text: str) -> dict[str, bool | str]:
+        settings: dict[str, bool | str] = {}
+        for raw_line in text.splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            key, separator, value = line.partition(":")
+            if not separator:
+                continue
+
+            normalized_key = key.strip()
+            raw_value = value.strip()
+            if normalized_key == "include_datetime":
+                settings[normalized_key] = raw_value.casefold() in {"true", "yes", "on", "1"}
+            elif normalized_key in {"base_name", "scale_percent"}:
+                settings[normalized_key] = self._parse_settings_string(raw_value)
+        return settings
+
+    def _parse_settings_string(self, raw_value: str) -> str:
+        if not raw_value:
+            return ""
+        if raw_value[:1] in {'"', "'"}:
+            return str(json.loads(raw_value)) if raw_value[:1] == '"' else str(ast.literal_eval(raw_value))
+        return raw_value
+
+    def _apply_save_settings(self, *, include_datetime: bool, base_name: str, scale: str) -> None:
+        if self._save_include_datetime_var is not None:
+            self._save_include_datetime_var.set(bool(include_datetime))
+        if self._save_base_name_var is not None:
+            self._save_base_name_var.set(base_name)
+        if self._save_scale_var is not None:
+            self._save_scale_var.set(scale)
+
+    def _save_include_datetime_value(self) -> bool:
+        return bool(self._save_include_datetime_var.get()) if self._save_include_datetime_var is not None else False
+
+    def _save_base_name_value(self) -> str:
+        return self._save_base_name_var.get() if self._save_base_name_var is not None else self._DEFAULT_SAVE_BASE_NAME
+
+    def _save_scale_value(self) -> str:
+        return self._save_scale_var.get() if self._save_scale_var is not None else self._DEFAULT_SAVE_SCALE
+
+    def _log_failure(self, message: str, exc: Exception) -> None:
+        try:
+            from utils import log
+
+            log(f"{message}: {exc}")
+        except Exception:
+            pass
+
+    def _noop_control(self) -> None:
+        return None
 
     def _resolve_draw_color(self, color: str) -> str:
         if color == "background":

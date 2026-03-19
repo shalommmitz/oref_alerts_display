@@ -1,17 +1,30 @@
 import time
 from pathlib import Path
 from datetime import datetime
+from typing import Callable
 
 import yaml
 from israel_map import IsraelMap
 
 BASE_DIR = Path(__file__).resolve().parent
+_LOG_TIME_SINK: Callable[[str], None] | None = None
+
+
+def set_log_time_sink(sink: Callable[[str], None] | None) -> None:
+    global _LOG_TIME_SINK
+    _LOG_TIME_SINK = sink
 
 def log(msg):
-    now = datetime.now().strftime("%d%B_%H%M.%S")
-    open("log.txt", 'a').write(f"{now} {msg}\n")
+    now = datetime.now()
+    if _LOG_TIME_SINK is not None:
+        try:
+            _LOG_TIME_SINK(now.strftime("%H:%M.%S"))
+        except Exception:
+            pass
+    now_text = now.strftime("%d%B_%H%M.%S")
+    open("log.txt", 'a').write(f"{now_text} {msg}\n")
     print(f"\r{" "*80}", end="")
-    print(f"\r{now} {msg[:80]}", end="")
+    print(f"\r{now_text} {msg[:80]}", end="")
 
 def sleep_with_ui(map_view: IsraelMap, seconds: float) -> bool:
     """Sleep in small steps so the Tk window stays responsive."""

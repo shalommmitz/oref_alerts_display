@@ -19,7 +19,8 @@ BASE_DIR = Path(__file__).resolve().parent
 
 coords = utils.get_coords()
 
-map_view = IsraelMap(auto_refresh=False)
+map_view = IsraelMap(auto_refresh=False, show_controls=True)
+utils.set_log_time_sink(map_view.set_log_timestamp)
 known_ids = []
 url_alerts = "https://www.oref.org.il/warningMessages/alert/Alerts.json"
 
@@ -110,7 +111,14 @@ while map_view.is_open():
            case "6":
               color = "orange"
            case "10":
-              color = "gray"
+              match alert["title"]:
+                 case "בדקות הקרובות צפויות להתקבל התרעות באזורך":
+                     color = "yellow"
+                 case  "האירוע הסתיים":
+                     color = "gray"
+                 case _:
+                     log(f'Unknown title in the alert "{alert["title"]}"')
+                     exit()
            case _:
               print("Unknown alert code")
               print(alert)
@@ -120,6 +128,7 @@ while map_view.is_open():
         break
 
 map_view.close()
+utils.set_log_time_sink(None)
 
 
 #url_history = "https://www.oref.org.il/warningMessages/alert/History/AlertsHistory.json"

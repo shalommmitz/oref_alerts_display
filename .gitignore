@@ -2,3 +2,5 @@ __pycache__/
 log.txt
 last_alert.yaml
 biggest_alert.yaml
+settings.yaml
+cities.json
