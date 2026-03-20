@@ -175,7 +175,7 @@ class IsraelMap:
         self,
         width: int | None = None,
         height: int | None = None,
-        title: str = "Israel Map",
+        title: str = "Homefrong Command Alerts",
         image_path: str | Path | None = None,
         auto_refresh: bool = True,
         padding: int = 20,
