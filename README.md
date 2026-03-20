@@ -66,6 +66,7 @@ What happens:
 - On the first successful contact, the script replays the previous two minutes of history from the history endpoint, in old-to-new order.
 - After a network interruption, the script fetches history since the last successful live poll and replays any missed alerts.
 - Live alerts and replayed alerts are normalized into the same runtime shape.
+- Replay and expiry timing are anchored to `Asia/Jerusalem`, so they do not depend on the consuming machine's local timezone.
 - New alerts are stored in `last_alert.yaml`.
 - Each alerted locality is matched against the local coordinate table and drawn on the map.
 - "Event ended" markers are automatically removed 10 minutes after their alert appearance time.
@@ -181,6 +182,7 @@ The runtime code expects that generated file to exist in the project directory.
 - The official history endpoint can return HTTP 200 with an empty body when there are no recent rows; the history client treats that as an empty replay list.
 - As observed on March 20, 2026, the official history payload rows had only `alertDate`, `title`, `data`, and `category`, with `data` as a single locality string and yellow pre-alert rows using category `14`.
 - As observed on March 20, 2026, the official `https://www.oref.org.il/alerts/alertCategories.json` metadata mapped category `2` to `uav`, category `13` to `update`, and category `14` to `flash`, all of which are relevant to current runtime payloads.
+- OREF `alertDate` values are interpreted in `Asia/Jerusalem`; replay and expiry do not rely on the consuming machine's local timezone.
 - The live and history endpoint URLs can be overridden with `OREF_ALERTS_URL` and `OREF_ALERTS_HISTORY_URL`.
 
 ## License

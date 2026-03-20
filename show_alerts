@@ -12,7 +12,7 @@ import utils
 from alert_expiry import AlertExpiryManager
 from alert_fetcher import AlertFetcher
 from alert_history import AlertHistoryClient
-from alert_model import decode_alert_text, normalize_live_alert, parse_live_alert_text
+from alert_model import current_oref_time, decode_alert_text, normalize_live_alert, parse_live_alert_text
 from alert_render import draw_alert, persist_alert_artifacts
 from israel_map import IsraelMap
 from utils import log
@@ -21,7 +21,7 @@ from utils import log
 TEST = False
 REQUEST_TIMEOUT = (3.05, 5)
 POLL_INTERVAL_SECONDS = 10
-REPLAY_LOOKBACK_SECONDS = 120
+OREF_REPLAY_LOOKBACK_SECONDS = 120
 MAX_KNOWN_ALERTS = 2000
 URL_ALERTS = os.environ.get(
     "OREF_ALERTS_URL",
@@ -70,7 +70,7 @@ def fetch_replay_alerts(
     # 2. Recovery replay asks only for alerts newer than the last known live success.
     if not startup_replay_done:
         replay_label = "startup"
-        replay_since = now - timedelta(seconds=REPLAY_LOOKBACK_SECONDS)
+        replay_since = now - timedelta(seconds=OREF_REPLAY_LOOKBACK_SECONDS)
     elif network_was_down and last_live_success_at is not None:
         replay_label = "recovery"
         replay_since = last_live_success_at
@@ -183,7 +183,9 @@ def main() -> None:
                     log(f"Error: Wrong response code: {fetch_result.status_code}")
                     continue
 
-                now = datetime.now()
+                # 5. Compute replay cutoffs on the explicit OREF timezone basis so
+                #    startup and recovery work correctly on machines outside Israel.
+                now = current_oref_time()
                 alert_text = decode_alert_text(fetch_result.content or b"")
                 replay_alerts, startup_replay_done = fetch_replay_alerts(
                     history_client,

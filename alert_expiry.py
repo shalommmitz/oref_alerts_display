@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Callable
 
-from alert_model import AlertEvent
+from alert_model import AlertEvent, current_oref_time, ensure_oref_datetime
 from alert_render import is_event_ended_alert
 from israel_map import IsraelMap
 
@@ -40,7 +40,11 @@ class AlertExpiryManager:
         #    recovered alert still expires based on its original appearance time.
         # 4. Fall back to the local draw time for live alerts that do not carry a
         #    timestamp in the current payload shape.
-        appeared_at = alert.alert_date or drawn_at or datetime.now()
+        appeared_at = alert.alert_date
+        if appeared_at is None and drawn_at is not None:
+            appeared_at = ensure_oref_datetime(drawn_at)
+        if appeared_at is None:
+            appeared_at = current_oref_time()
         expires_at = appeared_at + EVENT_ENDED_TTL
         for item_id in marker_ids:
             self._pending.append(_PendingExpiry(item_id=item_id, expires_at=expires_at))
@@ -56,7 +60,7 @@ class AlertExpiryManager:
         #    not been reached yet.
         # 2. Marker deletion is delegated to `IsraelMap` so the canvas state and
         #    the saved marker list stay in sync.
-        anchor = now or datetime.now()
+        anchor = ensure_oref_datetime(now) if now is not None else current_oref_time()
         remaining: list[_PendingExpiry] = []
         cleared_count = 0
         for pending in self._pending:

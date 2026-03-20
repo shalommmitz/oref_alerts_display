@@ -50,6 +50,7 @@ Main loop responsibilities:
 - on first successful contact, replay the preceding two minutes of history in old-to-new order
 - after a network interruption, replay history rows newer than the last successful live poll
 - normalize live alerts and history rows into one shared runtime shape
+- compute replay timing on the explicit `Asia/Jerusalem` timezone basis
 - de-duplicate alerts before drawing
 - save the last processed alert to `last_alert.yaml`
 - map each alerted locality to coordinates
@@ -99,7 +100,7 @@ Key behaviors:
 
 - fetches history on demand with the shared timeout policy
 - treats HTTP 200 with an empty response body as "no history rows"
-- filters rows newer than a caller-provided cutoff time
+- filters rows newer than a caller-provided cutoff time on the explicit `Asia/Jerusalem` timezone basis
 - returns alerts in old-to-new order
 
 ### `alert_expiry.py`
@@ -111,6 +112,7 @@ Key behaviors:
 - tracks only the semantic "event ended" alert type
 - expires those markers 10 minutes after alert appearance
 - uses history timestamps when available so replayed rows expire on their original timeline
+- computes expiry deadlines on the explicit `Asia/Jerusalem` timezone basis
 - removes the exact drawn marker ids instead of painting over map locations
 
 ### `alert_model.py`
@@ -123,6 +125,7 @@ Key behaviors:
 - normalizes live alerts into a shared `AlertEvent` shape
 - normalizes history rows whose schema differs from live alerts
 - parses history timestamps from several expected string formats
+- converts OREF timestamps and replay cutoffs onto the explicit `Asia/Jerusalem` timezone basis
 
 Observed history payload details from the official endpoint on March 20, 2026:
 
@@ -382,6 +385,7 @@ Canonical names in this repository:
 - Unknown alert categories are fatal.
 - The official history endpoint has been observed to return HTTP 200 with an empty body when there are no recent alerts.
 - Only the semantic "האירוע הסתיים" alert type auto-clears after 10 minutes; other markers remain until manually cleared.
+- Replay timing correctness depends on interpreting OREF timestamps in `Asia/Jerusalem`, not in the consuming machine's local timezone.
 
 ## Recommended Verification After Changes
 

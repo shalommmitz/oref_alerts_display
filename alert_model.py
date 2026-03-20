@@ -5,6 +5,11 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from datetime import datetime
+from zoneinfo import ZoneInfo
+
+
+OREF_TIMEZONE = ZoneInfo("Asia/Jerusalem")
+_SORT_MIN_ALERT_DATE = datetime.min.replace(tzinfo=OREF_TIMEZONE)
 
 
 @dataclass(frozen=True)
@@ -24,6 +29,23 @@ def decode_alert_text(content: bytes) -> str:
     return content.decode("utf-8-sig").strip()
 
 
+def current_oref_time() -> datetime:
+    # 1. Keep all replay and expiry comparisons on the same timezone basis, even
+    #    when the consuming machine is not configured for Israel time.
+    # 2. The OREF history endpoint timestamps are local Israel wall-clock times,
+    #    so `Asia/Jerusalem` is the right reference zone.
+    return datetime.now(OREF_TIMEZONE)
+
+
+def ensure_oref_datetime(value: datetime) -> datetime:
+    # 1. Normalize every runtime cutoff onto the same explicit timezone basis.
+    # 2. Naive datetimes are interpreted as already being OREF-local times, while
+    #    aware datetimes are converted into that zone.
+    if value.tzinfo is None:
+        return value.replace(tzinfo=OREF_TIMEZONE)
+    return value.astimezone(OREF_TIMEZONE)
+
+
 def parse_live_alert_text(alert_text: str) -> AlertEvent | None:
     # 1. Treat empty or nearly-empty payloads as "no current alert".
     # 2. This preserves the long-standing behavior of the main loop.
@@ -38,6 +60,7 @@ def normalize_live_alert(raw_alert: dict) -> AlertEvent:
     #    ensures the data list and the deduplication key are stable.
     data = _normalize_localities(raw_alert.get("data"))
     alert_id = str(raw_alert.get("id", ""))
+    alert_date = parse_alert_datetime(raw_alert.get("alertDate"))
     title = str(raw_alert.get("title", ""))
     cat = str(raw_alert.get("cat", ""))
     desc = str(raw_alert.get("desc", ""))
@@ -48,14 +71,22 @@ def normalize_live_alert(raw_alert: dict) -> AlertEvent:
         "data": list(data),
         "desc": desc,
     }
+    if alert_date is not None:
+        raw["alertDate"] = raw_alert.get("alertDate")
     return AlertEvent(
-        key=_build_alert_key(alert_id=alert_id, alert_date=None, cat=cat, title=title, data=data),
+        key=_build_alert_key(
+            alert_id=alert_id,
+            alert_date=alert_date,
+            cat=cat,
+            title=title,
+            data=data,
+        ),
         raw=raw,
         cat=cat,
         title=title,
         data=data,
         desc=desc,
-        alert_date=None,
+        alert_date=alert_date,
     )
 
 
@@ -123,8 +154,8 @@ def normalize_history_alert(raw_item: dict) -> AlertEvent | None:
 def parse_alert_datetime(value: object) -> datetime | None:
     # 1. Support a few timestamp layouts because the history API is not guaranteed
     #    to stay pinned to one exact string representation.
-    # 2. Use naive datetimes consistently because the current project compares
-    #    everything against local wall-clock time the same way.
+    # 2. Always return datetimes on the explicit OREF timezone basis so replay
+    #    and expiry work correctly on machines outside Israel's local timezone.
     if not isinstance(value, str):
         return None
     text = value.strip()
@@ -142,9 +173,7 @@ def parse_alert_datetime(value: object) -> datetime | None:
         except ValueError:
             pass
         else:
-            if parsed.tzinfo is not None:
-                return parsed.astimezone().replace(tzinfo=None)
-            return parsed
+            return ensure_oref_datetime(parsed)
 
     for fmt in (
         "%Y-%m-%d %H:%M:%S",
@@ -153,7 +182,7 @@ def parse_alert_datetime(value: object) -> datetime | None:
         "%d/%m/%Y %H:%M",
     ):
         try:
-            return datetime.strptime(text, fmt)
+            return ensure_oref_datetime(datetime.strptime(text, fmt))
         except ValueError:
             continue
     return None
@@ -189,4 +218,4 @@ def _build_alert_key(
 
 
 def _history_sort_key(event: AlertEvent) -> tuple[datetime, str]:
-    return (event.alert_date or datetime.min, event.key)
+    return (event.alert_date or _SORT_MIN_ALERT_DATE, event.key)

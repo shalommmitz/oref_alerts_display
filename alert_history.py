@@ -7,7 +7,13 @@ from datetime import datetime, timedelta
 
 import requests
 
-from alert_model import AlertEvent, decode_alert_text, normalize_history_payload
+from alert_model import (
+    AlertEvent,
+    current_oref_time,
+    decode_alert_text,
+    ensure_oref_datetime,
+    normalize_history_payload,
+)
 
 
 class AlertHistoryClient:
@@ -18,14 +24,20 @@ class AlertHistoryClient:
     def fetch_recent(self, lookback_seconds: int, now: datetime | None = None) -> list[AlertEvent]:
         # 1. Startup replay wants a relative window ending "now".
         # 2. Convert that into the same absolute cutoff used by recovery replay.
-        anchor = now or datetime.now()
+        anchor = ensure_oref_datetime(now) if now is not None else current_oref_time()
         return self.fetch_since(anchor - timedelta(seconds=lookback_seconds))
 
     def fetch_since(self, since: datetime) -> list[AlertEvent]:
         # 1. Fetch the raw history payload from the endpoint.
-        # 2. Normalize rows and keep only alerts newer than the requested cutoff.
+        # 2. Normalize the cutoff onto the OREF timezone basis before comparing it
+        #    to history rows that were parsed from OREF-local timestamps.
+        normalized_since = ensure_oref_datetime(since)
         events = self._fetch_all()
-        return [event for event in events if event.alert_date is not None and event.alert_date > since]
+        return [
+            event
+            for event in events
+            if event.alert_date is not None and event.alert_date > normalized_since
+        ]
 
     def _fetch_all(self) -> list[AlertEvent]:
         # 1. History fetches are infrequent, so a one-shot request is enough here.
