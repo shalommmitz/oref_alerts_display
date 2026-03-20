@@ -16,6 +16,11 @@ The goal of this project is fast local response and reduced dependence on third-
 ## Repository Layout
 
 - `show_alerts`: main runtime script. Polls alerts, resolves localities, and draws them.
+- `alert_fetcher.py`: background polling thread for the live alert endpoint.
+- `alert_expiry.py`: time-based cleanup for alert markers that should disappear automatically.
+- `alert_history.py`: history replay client for startup catch-up and outage recovery.
+- `alert_model.py`: normalization helpers for live alerts and history rows.
+- `alert_render.py`: alert persistence and drawing helpers.
 - `israel_map.py`: standalone map window and drawing module.
 - `utils.py`: shared helpers, including UI-friendly sleep and locality coordinate loading.
 - `map_reference_usage.py`: placeholder example for integrating a custom `fetch_coords()` loop.
@@ -56,16 +61,21 @@ Notes:
 
 What happens:
 
-- The script polls `https://www.oref.org.il/warningMessages/alert/Alerts.json`.
-- Empty or nearly-empty responses are treated as "no current alert" and retried after 10 seconds.
+- A background thread polls `https://www.oref.org.il/warningMessages/alert/Alerts.json`.
+- The Tk thread stays responsive while waiting for network results.
+- On the first successful contact, the script replays the previous two minutes of history from the history endpoint, in old-to-new order.
+- After a network interruption, the script fetches history since the last successful live poll and replays any missed alerts.
+- Live alerts and replayed alerts are normalized into the same runtime shape.
 - New alerts are stored in `last_alert.yaml`.
 - Each alerted locality is matched against the local coordinate table and drawn on the map.
+- "Event ended" markers are automatically removed 10 minutes after their alert appearance time.
 
 Current alert color mapping:
 
 - `cat == "1"` (missile attack) -> `red`
-- `cat == "6"` (KATBAM attack)  -> `orange`
-- `cat == "10"`(release)        -> `gray`
+- `cat == "2"` or `cat == "6"` (UAV / older matrix id 6) -> `orange`
+- title `בדקות הקרובות צפויות להתקבל התרעות באזורך` -> `yellow`
+- title `האירוע הסתיים` -> `gray`
 
 Unknown categories currently cause the script to exit.
 
@@ -81,7 +91,7 @@ The script will then load a local sample alert instead of polling the network.
 
 Current sample file used by the script:
 
-- `alert_example_2.yaml`
+- `last_alert.yaml`
 
 ## Using The Map Module Directly
 
@@ -115,6 +125,7 @@ Supported draw parameters:
 - Colors: `white`, `black`, `blue`, `red`, `green`, `gray`, `orange`, `background`
 - Shapes: `circle`, `rect`, `square`
 - Size: pixel diameter or width
+- `draw()` now returns the canvas item id for the created marker, which can be passed to `remove_marker()`.
 
 ## Placeholder Integration Example
 
@@ -163,8 +174,14 @@ The runtime code expects that generated file to exist in the project directory.
 - The background image is loaded from `israel_outline.png` by default.
 - Coordinate placement uses a calibrated normalized lat/lon transform fitted against control points collected on the current outline asset. Do not assume the current mapping is a pure geographic projection.
 - All shapes share the same coordinate transform.
+- `IsraelMap.remove_marker()` removes a specific marker without affecting later markers drawn at the same locality.
 - `localities.yaml` has priority over `cities.json` when generating the runtime locality lookup.
 - The alert endpoint may return UTF-8 BOM-prefixed JSON. `show_alerts` handles this explicitly.
+- History replay rows are normalized to the same in-memory schema as live alerts before deduplication and drawing.
+- The official history endpoint can return HTTP 200 with an empty body when there are no recent rows; the history client treats that as an empty replay list.
+- As observed on March 20, 2026, the official history payload rows had only `alertDate`, `title`, `data`, and `category`, with `data` as a single locality string and yellow pre-alert rows using category `14`.
+- As observed on March 20, 2026, the official `https://www.oref.org.il/alerts/alertCategories.json` metadata mapped category `2` to `uav`, category `13` to `update`, and category `14` to `flash`, all of which are relevant to current runtime payloads.
+- The live and history endpoint URLs can be overridden with `OREF_ALERTS_URL` and `OREF_ALERTS_HISTORY_URL`.
 
 ## License
 

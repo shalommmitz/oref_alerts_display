@@ -2,6 +2,7 @@ import time
 from pathlib import Path
 from datetime import datetime
 from typing import Callable
+import sys
 
 import yaml
 from israel_map import IsraelMap
@@ -22,9 +23,10 @@ def log(msg):
         except Exception:
             pass
     now_text = now.strftime("%d%B_%H%M.%S")
-    open("log.txt", 'a').write(f"{now_text} {msg}\n")
-    print(f"\r{" "*80}", end="")
-    print(f"\r{now_text} {msg[:80]}", end="")
+    with open("log.txt", "a", encoding="utf-8") as handle:
+        handle.write(f"{now_text} {msg}\n")
+    sys.stdout.write(f"\r{' ' * 80}\r{now_text} {msg[:80]}")
+    sys.stdout.flush()
 
 def sleep_with_ui(map_view: IsraelMap, seconds: float) -> bool:
     """Sleep in small steps so the Tk window stays responsive."""

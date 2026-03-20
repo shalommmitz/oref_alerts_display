@@ -1,139 +1,238 @@
 #!/usr/bin/env python3
-import json
+
+from __future__ import annotations
+
+import os
+from datetime import datetime, timedelta
 from pathlib import Path
 
-import requests
 import yaml
-import os
 
 import utils
-from utils import log
+from alert_expiry import AlertExpiryManager
+from alert_fetcher import AlertFetcher
+from alert_history import AlertHistoryClient
+from alert_model import decode_alert_text, normalize_live_alert, parse_live_alert_text
+from alert_render import draw_alert, persist_alert_artifacts
 from israel_map import IsraelMap
+from utils import log
+
 
 TEST = False
-
-if TEST:
-   log("TEST MODE ON")
+REQUEST_TIMEOUT = (3.05, 5)
+POLL_INTERVAL_SECONDS = 10
+REPLAY_LOOKBACK_SECONDS = 120
+MAX_KNOWN_ALERTS = 2000
+URL_ALERTS = os.environ.get(
+    "OREF_ALERTS_URL",
+    "https://www.oref.org.il/warningMessages/alert/Alerts.json",
+)
+URL_HISTORY = os.environ.get(
+    "OREF_ALERTS_HISTORY_URL",
+    "https://www.oref.org.il/warningMessages/alert/History/AlertsHistory.json",
+)
+TEST_ALERT_PATH = "last_alert.yaml"
 
 BASE_DIR = Path(__file__).resolve().parent
 
-coords = utils.get_coords()
 
-map_view = IsraelMap(auto_refresh=False, show_controls=True)
-utils.set_log_time_sink(map_view.set_log_timestamp)
-known_ids = []
-url_alerts = "https://www.oref.org.il/warningMessages/alert/Alerts.json"
+def remember_alert(alert_key: str, known_order: list[str], known_lookup: set[str]) -> None:
+    # 1. Keep both an ordered list and a set so dedup stays fast without growing forever.
+    # 2. The ordered list makes it easy to evict the oldest remembered alerts.
+    if alert_key in known_lookup:
+        return
+    known_order.append(alert_key)
+    known_lookup.add(alert_key)
+    while len(known_order) > MAX_KNOWN_ALERTS:
+        oldest_key = known_order.pop(0)
+        known_lookup.discard(oldest_key)
 
-biggest_alert_size = 0
-if os.path.isfile("biggest_alert.yaml"):
-     biggest_alert_size = os.path.getsize("biggest_alert.yaml")
+
+def load_test_alert() -> tuple[object | None, str]:
+    # 1. TEST mode loads one local alert file and reuses the normal live-alert
+    #    normalization path so the rest of the loop behaves the same.
+    # 2. Returning both the normalized alert and the raw text keeps the caller logic simple.
+    with (BASE_DIR / TEST_ALERT_PATH).open(encoding="utf-8") as handle:
+        raw_alert = yaml.safe_load(handle)
+    return normalize_live_alert(raw_alert), str(raw_alert)
 
 
-while map_view.is_open():
+def fetch_replay_alerts(
+    history_client: AlertHistoryClient,
+    *,
+    startup_replay_done: bool,
+    network_was_down: bool,
+    last_live_success_at: datetime | None,
+    now: datetime,
+) -> tuple[list[object], bool]:
+    # 1. Startup replay asks for the preceding two minutes once, after the first
+    #    successful contact with the live endpoint.
+    # 2. Recovery replay asks only for alerts newer than the last known live success.
+    if not startup_replay_done:
+        replay_label = "startup"
+        replay_since = now - timedelta(seconds=REPLAY_LOOKBACK_SECONDS)
+    elif network_was_down and last_live_success_at is not None:
+        replay_label = "recovery"
+        replay_since = last_live_success_at
+    else:
+        return [], startup_replay_done
+
+    try:
+        replay_alerts = history_client.fetch_since(replay_since)
+    except Exception as exc:
+        log(f"Error: could not fetch {replay_label} history ({exc.__class__.__name__}: {exc})")
+        return [], True
+
+    if replay_alerts:
+        log(f"Replaying {len(replay_alerts)} history alerts from {replay_label}")
+    return replay_alerts, True
+
+
+def handle_alert(
+    alert,
+    *,
+    alert_text: str,
+    base_dir: Path,
+    biggest_alert_size: int,
+    coords: dict[str, dict[str, float]],
+    known_order: list[str],
+    known_lookup: set[str],
+    map_view: IsraelMap,
+    expiry_manager: AlertExpiryManager,
+) -> int:
+    # 1. Skip alerts that were already processed, whether they came from live polling
+    #    or from the history replay path.
+    # 2. Keep the persistence and drawing work centralized in one helper call site.
+    if alert.key in known_lookup:
+        return biggest_alert_size
+
+    biggest_alert_size = persist_alert_artifacts(
+        alert,
+        base_dir=base_dir,
+        biggest_alert_size=biggest_alert_size,
+    )
+    log("Alert contents:" + str(alert.raw))
+    remember_alert(alert.key, known_order, known_lookup)
+    print(len(alert_text), alert_text)
+    marker_ids = draw_alert(map_view, coords, alert, log)
+    expiry_manager.remember_drawn_alert(alert, marker_ids)
+    return biggest_alert_size
+
+
+def main() -> None:
+    coords = utils.get_coords()
+    map_view = IsraelMap(auto_refresh=False, show_controls=True)
+    utils.set_log_time_sink(map_view.set_log_timestamp)
+
+    # 1. Keep the runtime state close to the top-level loop so the main control
+    #    flow remains easy to read.
+    # 2. `startup_replay_done` and `network_was_down` are the two switches that
+    #    decide whether the history helper needs to run.
+    known_order: list[str] = []
+    known_lookup: set[str] = set()
+    history_client = AlertHistoryClient(URL_HISTORY, REQUEST_TIMEOUT)
+    expiry_manager = AlertExpiryManager()
+    fetcher: AlertFetcher | None = None
+    startup_replay_done = TEST
+    network_was_down = False
+    last_live_success_at: datetime | None = None
+
+    biggest_alert_size = 0
+    biggest_alert_path = BASE_DIR / "biggest_alert.yaml"
+    if biggest_alert_path.is_file():
+        biggest_alert_size = biggest_alert_path.stat().st_size
 
     if TEST:
-        #with (BASE_DIR / "alert_example_2.yaml").open() as handle:
-        with (BASE_DIR / "last_alert.yaml").open() as handle:
-            alert = yaml.safe_load(handle)
-        alert_text = str(alert)
+        log("TEST MODE ON")
     else:
-        try:
-            res = requests.get(url_alerts)
-        except:
-            log("Error: could not fetch data (probably no network)")
-            if not utils.sleep_with_ui(map_view, 10):break
-            continue
-        if res.status_code !=200:
-            log("")
-            log(f"Error: Wrong response code: {res.status_code}")
-            log("")
-            if not utils.sleep_with_ui(map_view, 10):break
-            continue
-        alert_text = res.content.decode("utf-8-sig").strip()
-        log("Alert fetched")
-        if len(alert_text)<=3:
-            if not utils.sleep_with_ui(map_view, 10):break
-            continue
-        try:
-            alert = json.loads(alert_text)
-        except:
-            log("Error: could not parse data (json load failed)")
-            log("Problem msg:")
-            log(alert_text)
-            if not utils.sleep_with_ui(map_view, 10):break
-            continue
+        # 3. Start the continuous live polling in the background worker.
+        fetcher = AlertFetcher(
+            url=URL_ALERTS,
+            poll_interval=POLL_INTERVAL_SECONDS,
+            timeout=REQUEST_TIMEOUT,
+        )
+        fetcher.start()
 
-    # Detect and handle seen-before alerts 
-    id = alert["id"]
-    if id in known_ids:
-        if not utils.sleep_with_ui(map_view, 10):break
-        continue
+    try:
+        while map_view.is_open():
+            # 3. Let time-based cleanup run continuously, even while the app is idle
+            #    or the network is temporarily unavailable.
+            expiry_manager.expire_due_markers(map_view, log_fn=log)
+            alerts_to_process: list[tuple[object, str]] = []
 
-    # Alert is valid and was not seen before. Handle it
-    if len(str(alert))>biggest_alert_size:
-        with (BASE_DIR / "biggest_alert.yaml").open("w") as handle:
-            yaml.safe_dump(alert, handle)
-    log("Alert contents:" +str( alert))
-    known_ids.append(id)
-    if len(known_ids)>1000:
-       known_ids = known_ids[-1000:] 
-    print( len(alert_text), alert_text )
-    with (BASE_DIR / "last_alert.yaml").open("w") as handle:
-        yaml.safe_dump(alert, handle)
-    localities = alert["data"]
-    for locality in localities:
-       
-        # Attempt to find coordinates of current locality. Skip if not found
-        coords_key = None
-        normalized_locality = locality
-        if " - " in locality:
-            normalized_locality = locality.split(" - ")[0]
-        normalized_locality = normalized_locality.replace("''", '"')
-        if locality in coords.keys():
-            coords_key = locality 
-        if coords_key is None: 
-           for l in coords.keys():
-               if l.startswith(locality):
-                   coords_key = l  
-        if coords_key is None: 
-            print(locality)
-            for l in coords.keys():
-                if l.startswith(locality[:2]):
-                    print("   ", l)
-            continue
-    
-        #print("   ", coords[coords_key])
-        latitude = coords[coords_key]["latitude"] 
-        longitude = coords[coords_key]["longitude"] 
-        match alert["cat"]:
-           case "1":
-              color = "red"
-           case "6":
-              color = "orange"
-           case "10":
-              match alert["title"]:
-                 case "בדקות הקרובות צפויות להתקבל התרעות באזורך":
-                     color = "yellow"
-                 case  "האירוע הסתיים":
-                     color = "gray"
-                 case _:
-                     log(f'Unknown title in the alert "{alert["title"]}"')
-                     exit()
-           case _:
-              print("Unknown alert code")
-              print(alert)
-              exit()
-        map_view.draw(latitude, longitude, color, "circle", 8, refresh=False)
-    if not map_view.update():
-        break
+            if TEST:
+                test_alert, alert_text = load_test_alert()
+                if test_alert is not None:
+                    alerts_to_process.append((test_alert, alert_text))
+            else:
+                # 4. Poll the worker thread and keep the UI responsive while we wait.
+                fetch_result = fetcher.poll()
+                if fetch_result is None:
+                    if not utils.sleep_with_ui(map_view, 0.1):
+                        break
+                    continue
+                if fetch_result.error_type is not None:
+                    network_was_down = True
+                    log(
+                        "Error: could not fetch data "
+                        f"({fetch_result.error_type}: {fetch_result.error_message})"
+                    )
+                    continue
+                if fetch_result.status_code != 200:
+                    network_was_down = True
+                    log(f"Error: Wrong response code: {fetch_result.status_code}")
+                    continue
 
-map_view.close()
-utils.set_log_time_sink(None)
+                now = datetime.now()
+                alert_text = decode_alert_text(fetch_result.content or b"")
+                replay_alerts, startup_replay_done = fetch_replay_alerts(
+                    history_client,
+                    startup_replay_done=startup_replay_done,
+                    network_was_down=network_was_down,
+                    last_live_success_at=last_live_success_at,
+                    now=now,
+                )
+                network_was_down = False
+                last_live_success_at = now
+
+                for replay_alert in replay_alerts:
+                    replay_text = str(replay_alert.raw)
+                    alerts_to_process.append((replay_alert, replay_text))
+
+                try:
+                    live_alert = parse_live_alert_text(alert_text)
+                except Exception:
+                    log("Error: could not parse data (json load failed)")
+                    log("Problem msg:")
+                    log(alert_text)
+                    continue
+                if live_alert is not None:
+                    log("Alert fetched")
+                    alerts_to_process.append((live_alert, alert_text))
+
+            for alert, alert_text in alerts_to_process:
+                biggest_alert_size = handle_alert(
+                    alert,
+                    alert_text=alert_text,
+                    base_dir=BASE_DIR,
+                    biggest_alert_size=biggest_alert_size,
+                    coords=coords,
+                    known_order=known_order,
+                    known_lookup=known_lookup,
+                    map_view=map_view,
+                    expiry_manager=expiry_manager,
+                )
+
+            if not map_view.update():
+                break
+            if TEST and (not utils.sleep_with_ui(map_view, POLL_INTERVAL_SECONDS)):
+                break
+    finally:
+        if fetcher is not None:
+            fetcher.stop()
+        map_view.close()
+        utils.set_log_time_sink(None)
 
 
-#url_history = "https://www.oref.org.il/warningMessages/alert/History/AlertsHistory.json"
-#alerts_history = requests.get(url_history).json()
-#for alert in alerts_history:
-#    print(alert["alertDate"], alert["data"], alert["category"])
-#print(alerts_history[0])
-#exit()
+if __name__ == "__main__":
+    main()

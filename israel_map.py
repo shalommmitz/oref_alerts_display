@@ -245,7 +245,7 @@ class IsraelMap:
         shape: str,
         size: int,
         refresh: bool | None = None,
-    ) -> None:
+    ) -> int:
         """Draw a marker on the map by geographic coordinate."""
         self._validate_draw_params(latitude, longitude, color, shape, size)
 
@@ -288,6 +288,26 @@ class IsraelMap:
             refresh = self.auto_refresh
         if refresh:
             self.process_events()
+        return item_id
+
+    def remove_marker(self, item_id: int, refresh: bool | None = None) -> bool:
+        """Remove one previously drawn marker by canvas item id."""
+        # 1. Ignore unknown ids so callers can safely expire markers that were
+        #    already removed by a manual map clear or window shutdown.
+        # 2. Keep `_drawn_items` and `_drawn_markers` aligned so saved-image output
+        #    reflects only the markers that are still visible.
+        if item_id not in self._drawn_items:
+            return False
+
+        marker_index = self._drawn_items.index(item_id)
+        self._drawn_items.pop(marker_index)
+        self._drawn_markers.pop(marker_index)
+        self.canvas.delete(item_id)
+        if refresh is None:
+            refresh = self.auto_refresh
+        if refresh:
+            self.process_events()
+        return True
 
     def reset(self, refresh: bool | None = None) -> None:
         """Restore the canvas to the original image-only state."""
