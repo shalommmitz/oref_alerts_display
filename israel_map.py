@@ -186,7 +186,8 @@ class IsraelMap:
     _STATUS_EDGE_MARGIN = 8
     _STATUS_STACK_GAP = 6
     _STATUS_PANEL_Y_OFFSET = 14
-    _LOG_TEXT_Y_OFFSET = 4
+    _LOG_TEXT_Y_OFFSET = 6
+    _STATUS_AND_BUTTON_FONT = ("TkDefaultFont", 11, "bold")
 
     def __init__(
         self,
@@ -452,7 +453,7 @@ class IsraelMap:
                 pady=3,
                 bd=0,
                 relief="flat",
-                font=("TkDefaultFont", 10, "bold"),
+                font=self._STATUS_AND_BUTTON_FONT,
                 bg=colors["button_bg"] if spec.enabled else colors["button_disabled_bg"],
                 fg=colors["button_fg"],
                 activebackground=colors["button_active_bg"],
@@ -519,7 +520,7 @@ class IsraelMap:
                 text=timestamp,
                 anchor="sw",
                 fill="#394047",
-                font=("TkDefaultFont", 14, "bold"),
+                font=("TkDefaultFont", 12, "bold"),
             )
         else:
             self.canvas.itemconfigure(self._log_time_text_id, text=timestamp)
@@ -542,7 +543,7 @@ class IsraelMap:
                 text=text,
                 anchor="sw",
                 fill=colors["text"],
-                font=("TkDefaultFont", 9, "bold"),
+                font=self._STATUS_AND_BUTTON_FONT,
             )
         else:
             self.canvas.itemconfigure(self._watchdog_text_id, text=text, fill=colors["text"])
@@ -561,7 +562,7 @@ class IsraelMap:
             if watchdog_bbox is not None:
                 panel_bottom = watchdog_bbox[1] - self._STATUS_STACK_GAP
 
-        text_x = panel_left + 6
+        text_x = panel_left + 4
         text_y = panel_bottom - 4 + self._LOG_TEXT_Y_OFFSET
         self.canvas.coords(self._log_time_text_id, text_x, text_y)
         bbox = self.canvas.bbox(self._log_time_text_id)
