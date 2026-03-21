@@ -11,6 +11,30 @@ from alert_model import AlertEvent
 from israel_map import IsraelMap
 
 
+class AlertMarkerRegistry:
+    def __init__(self) -> None:
+        # 1. Keep one visible alert marker per resolved map locality.
+        # 2. The registry is keyed by the final coordinates lookup key so alerts
+        #    that normalize to the same mapped locality replace each other.
+        self._marker_by_locality: dict[str, int] = {}
+
+    def replace_marker(
+        self,
+        map_view: IsraelMap,
+        *,
+        locality_key: str,
+        item_id: int,
+    ) -> None:
+        # 1. Remove the older marker first so the new alert visibly replaces it
+        #    instead of stacking on top of it.
+        # 2. Ignore already-missing markers because they may have been cleared by
+        #    expiry or by a manual map reset.
+        previous_item_id = self._marker_by_locality.get(locality_key)
+        if previous_item_id is not None and previous_item_id != item_id:
+            map_view.remove_marker(previous_item_id, refresh=False)
+        self._marker_by_locality[locality_key] = item_id
+
+
 def persist_alert_artifacts(
     alert: AlertEvent,
     *,
@@ -35,9 +59,11 @@ def draw_alert(
     coords: dict[str, dict[str, float]],
     alert: AlertEvent,
     log_fn: Callable[[str], None],
+    marker_registry: AlertMarkerRegistry,
 ) -> list[int]:
     # 1. Resolve the alert color once per alert and reuse it for every locality.
-    # 2. Keep the marker-drawing loop focused only on locality lookup and drawing.
+    # 2. Keep the marker-drawing loop focused only on locality lookup, replacement,
+    #    and drawing.
     drawn_marker_ids: list[int] = []
     color = _alert_color(alert, log_fn)
     for locality in alert.data:
@@ -51,9 +77,13 @@ def draw_alert(
 
         latitude = coords[coords_key]["latitude"]
         longitude = coords[coords_key]["longitude"]
-        drawn_marker_ids.append(
-            map_view.draw(latitude, longitude, color, "circle", 8, refresh=False)
+        item_id = map_view.draw(latitude, longitude, color, "circle", 8, refresh=False)
+        marker_registry.replace_marker(
+            map_view,
+            locality_key=coords_key,
+            item_id=item_id,
         )
+        drawn_marker_ids.append(item_id)
     return drawn_marker_ids
 
 
