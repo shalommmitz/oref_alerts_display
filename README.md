@@ -17,7 +17,7 @@ The goal of this project is fast local response and reduced dependence on third-
 
 - `show_alerts`: main runtime script. Polls alerts, resolves localities, and draws them.
 - `alert_fetcher.py`: background polling thread for the live alert endpoint.
-- `watchdog.py`: thread-safe health monitor for UI heartbeat, fetch attempts, and update age.
+- `watchdog.py`: thread-safe health monitor for UI heartbeat, fetch attempts, update age, and Online/Offline status.
 - `alert_expiry.py`: time-based cleanup for alert markers that should disappear automatically.
 - `alert_history.py`: history replay client for startup catch-up and outage recovery.
 - `alert_model.py`: normalization helpers for live alerts and history rows.
@@ -72,7 +72,7 @@ What happens:
 - Each alerted locality is matched against the local coordinate table and drawn on the map.
 - "Event ended" markers are automatically removed 10 minutes after their alert appearance time.
 - Expired markers are cleared incrementally so large expiry batches do not monopolize the UI thread.
-- A compact upper-right watchdog shows a pulsing alive icon plus `Upd` and `Try` ages in seconds.
+- A compact lower-left watchdog shows a pulsing alive icon and `Online` or `Offline`.
 
 Current alert color mapping:
 
@@ -187,7 +187,7 @@ The runtime code expects that generated file to exist in the project directory.
 - As observed on March 20, 2026, the official `https://www.oref.org.il/alerts/alertCategories.json` metadata mapped category `2` to `uav`, category `13` to `update`, and category `14` to `flash`, all of which are relevant to current runtime payloads.
 - OREF `alertDate` values are interpreted in `Asia/Jerusalem`; replay and expiry do not rely on the consuming machine's local timezone.
 - Marker removal inside `IsraelMap` is O(1), and alert expiry is processed in bounded batches to reduce UI freeze risk.
-- The watchdog uses monotonic time, not wall-clock time, so the age display is independent of timezone and clock jumps.
+- The watchdog uses monotonic time, not wall-clock time, so freeze detection is independent of timezone and clock jumps.
 - The live and history endpoint URLs can be overridden with `OREF_ALERTS_URL` and `OREF_ALERTS_HISTORY_URL`.
 
 ## License

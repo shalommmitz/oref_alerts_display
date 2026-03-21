@@ -144,9 +144,6 @@ class IsraelMap:
     }
     _IMAGE_CANDIDATES = (
         "israel_outline.png",
-        "Israel_outline.png",
-        "israel_outline.jpg",
-        "israel_outline.jpeg",
     )
     _CONTROL_BUTTONS = (
         _ControlButtonSpec("Clear", "Clear Map", True, "clear_map"),
@@ -167,26 +164,19 @@ class IsraelMap:
         "tooltip_border": "#5a6168",
     }
     _WATCHDOG_COLORS = {
-        "ok": {
-            "panel_bg": "#edf7f1",
-            "panel_border": "#9dbca8",
-            "text": "#214533",
-            "icon_on": "#2f9e61",
-            "icon_off": "#b8ddc7",
+        "online": {
+            "panel_bg": "#f0f3f2",
+            "panel_border": "#b8c1bc",
+            "text": "#31463a",
+            "icon_on": "#5d9b76",
+            "icon_off": "#79ab8d",
         },
-        "warn": {
-            "panel_bg": "#fff4dc",
-            "panel_border": "#d6b779",
-            "text": "#6d4d17",
-            "icon_on": "#d58a00",
-            "icon_off": "#efd7a5",
-        },
-        "stale": {
-            "panel_bg": "#fbe7e7",
-            "panel_border": "#d29b9b",
-            "text": "#7a1f1f",
-            "icon_on": "#d14949",
-            "icon_off": "#e8bbbb",
+        "offline": {
+            "panel_bg": "#f4efef",
+            "panel_border": "#c8b7b7",
+            "text": "#6d3030",
+            "icon_on": "#bf6f6f",
+            "icon_off": "#cc8b8b",
         },
     }
     _SETTINGS_FILENAME = "settings.yaml"
@@ -194,7 +184,9 @@ class IsraelMap:
     _DEFAULT_SAVE_BASE_NAME = "alerts_map"
     _DEFAULT_SAVE_SCALE = "100"
     _STATUS_EDGE_MARGIN = 8
-    _STATUS_STACK_GAP = 8
+    _STATUS_STACK_GAP = 6
+    _STATUS_PANEL_Y_OFFSET = 14
+    _LOG_TEXT_Y_OFFSET = 4
 
     def __init__(
         self,
@@ -516,9 +508,9 @@ class IsraelMap:
                 0,
                 0,
                 0,
-                fill="#e8ebee",
-                outline="#a7adb2",
-                width=1,
+                fill="",
+                outline="",
+                width=0,
             )
         if self._log_time_text_id is None:
             self._log_time_text_id = self.canvas.create_text(
@@ -527,7 +519,7 @@ class IsraelMap:
                 text=timestamp,
                 anchor="sw",
                 fill="#394047",
-                font=("TkDefaultFont", 20, "bold"),
+                font=("TkDefaultFont", 14, "bold"),
             )
         else:
             self.canvas.itemconfigure(self._log_time_text_id, text=timestamp)
@@ -538,11 +530,11 @@ class IsraelMap:
         if self._closed or not self.root.winfo_exists():
             return
 
-        # 1. Keep the watchdog in the lower-right corner so it does not increase
+        # 1. Keep the watchdog in the lower-left corner so it does not increase
         #    the window height and stays separated from the control buttons.
         # 2. A pulsing icon makes it obvious when the UI loop itself has stopped
         #    progressing, because the pulse will freeze in place.
-        colors = self._WATCHDOG_COLORS.get(level, self._WATCHDOG_COLORS["stale"])
+        colors = self._WATCHDOG_COLORS.get(level, self._WATCHDOG_COLORS["offline"])
         if self._watchdog_text_id is None:
             self._watchdog_text_id = self.canvas.create_text(
                 0,
@@ -563,14 +555,14 @@ class IsraelMap:
             return
 
         panel_left = self._STATUS_EDGE_MARGIN
-        panel_bottom = self.height - self._STATUS_EDGE_MARGIN
+        panel_bottom = self.height - self._STATUS_EDGE_MARGIN - self._STATUS_PANEL_Y_OFFSET
         if self._watchdog_background_id is not None:
             watchdog_bbox = self.canvas.bbox(self._watchdog_background_id)
             if watchdog_bbox is not None:
                 panel_bottom = watchdog_bbox[1] - self._STATUS_STACK_GAP
 
         text_x = panel_left + 6
-        text_y = panel_bottom - 4
+        text_y = panel_bottom - 4 + self._LOG_TEXT_Y_OFFSET
         self.canvas.coords(self._log_time_text_id, text_x, text_y)
         bbox = self.canvas.bbox(self._log_time_text_id)
         if bbox is None:
@@ -582,13 +574,19 @@ class IsraelMap:
             bbox[2] + 6,
             bbox[3] + 4,
         )
+        self.canvas.itemconfigure(
+            self._log_time_background_id,
+            fill="",
+            outline="",
+            width=0,
+        )
 
     def _layout_watchdog_panel(self, colors: dict[str, str], pulse_on: bool) -> None:
         if self._watchdog_text_id is None:
             return
 
         panel_left = self._STATUS_EDGE_MARGIN
-        panel_bottom = self.height - self._STATUS_EDGE_MARGIN
+        panel_bottom = self.height - self._STATUS_EDGE_MARGIN - self._STATUS_PANEL_Y_OFFSET
         text_x = panel_left + 21
         text_y = panel_bottom - 4
         self.canvas.coords(self._watchdog_text_id, text_x, text_y)

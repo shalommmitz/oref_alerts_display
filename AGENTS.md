@@ -19,7 +19,7 @@ Current repo contents relevant to runtime behavior:
 
 - `show_alerts`: main executable script
 - `alert_fetcher.py`: background live-alert polling worker
-- `watchdog.py`: thread-safe health monitor for UI and fetch-attempt heartbeat
+- `watchdog.py`: thread-safe health monitor for UI heartbeat, fetch attempts, update age, and Online/Offline state
 - `alert_expiry.py`: time-based cleanup for auto-cleared markers
 - `alert_history.py`: history replay client for startup and recovery
 - `alert_model.py`: alert normalization helpers
@@ -52,7 +52,7 @@ Main loop responsibilities:
 - after a network interruption, replay history rows newer than the last successful live poll
 - normalize live alerts and history rows into one shared runtime shape
 - compute replay timing on the explicit `Asia/Jerusalem` timezone basis
-- update the watchdog overlay with UI heartbeat and update-age information
+- update the watchdog overlay with Online/Offline state and heartbeat information
 - de-duplicate alerts before drawing
 - save the last processed alert to `last_alert.yaml`
 - map each alerted locality to coordinates
@@ -105,7 +105,9 @@ Key behaviors:
 - tracks UI heartbeat from the main loop
 - tracks fetch attempts from the worker thread
 - tracks end-to-end update age from the main thread
-- computes `ok`, `warn`, and `stale` states for the overlay
+- marks the UI state as `Online` or `Offline`
+- treats fetch failures as `Offline`
+- provides a stable reason code and reason text for state-transition logging
 
 ### `alert_history.py`
 
@@ -179,7 +181,7 @@ Key behaviors:
 - optionally resizes and pads the image
 - converts latitude/longitude into image coordinates using a calibrated transform
 - draws markers on a `tk.Canvas`
-- renders a compact upper-right watchdog overlay without increasing window height
+- renders a compact lower-left watchdog overlay without increasing window height
 - supports both blocking and non-blocking usage
 
 Public methods:
@@ -411,7 +413,7 @@ Canonical names in this repository:
 - Only the semantic "האירוע הסתיים" alert type auto-clears after 10 minutes; other markers remain until manually cleared.
 - Replay timing correctness depends on interpreting OREF timestamps in `Asia/Jerusalem`, not in the consuming machine's local timezone.
 - Large batches of expired markers should be processed incrementally; avoid reintroducing unbounded O(n^2) marker removal on the Tk thread.
-- The watchdog reports fetch attempts and overall update age; it intentionally does not treat network failure as a software freeze by itself.
+- The watchdog reports Online/Offline state, treats fetch failure as Offline, and logs state transitions with reasons.
 
 ## Recommended Verification After Changes
 

@@ -141,6 +141,7 @@ def main() -> None:
     startup_replay_done = TEST
     network_was_down = False
     last_live_success_at: datetime | None = None
+    last_watchdog_state: tuple[str, str] | None = None
 
     biggest_alert_size = 0
     biggest_alert_path = BASE_DIR / "biggest_alert.yaml"
@@ -163,6 +164,13 @@ def main() -> None:
         while map_view.is_open():
             watchdog.note_ui_heartbeat()
             watchdog_snapshot = watchdog.snapshot()
+            watchdog_state = (watchdog_snapshot.level, watchdog_snapshot.reason_code)
+            if watchdog_state != last_watchdog_state:
+                if watchdog_snapshot.level == "online":
+                    log(f"Watchdog changed state: Online ({watchdog_snapshot.reason_text})")
+                else:
+                    log(f"Watchdog changed state: Offline ({watchdog_snapshot.reason_text})")
+                last_watchdog_state = watchdog_state
             map_view.set_watchdog_status(
                 watchdog_snapshot.text,
                 level=watchdog_snapshot.level,
@@ -176,7 +184,9 @@ def main() -> None:
             if TEST:
                 watchdog.note_fetch_attempt()
                 test_alert, alert_text = load_test_alert()
+                watchdog.note_fetch_success()
                 watchdog.note_pipeline_update()
+                utils.show_status(watchdog.snapshot().text)
                 if test_alert is not None:
                     alerts_to_process.append((test_alert, alert_text))
             else:
@@ -188,6 +198,9 @@ def main() -> None:
                     continue
                 watchdog.note_pipeline_update()
                 if fetch_result.error_type is not None:
+                    watchdog.note_fetch_failure(
+                        f"{fetch_result.error_type}: {fetch_result.error_message}"
+                    )
                     network_was_down = True
                     log(
                         "Error: could not fetch data "
@@ -195,10 +208,13 @@ def main() -> None:
                     )
                     continue
                 if fetch_result.status_code != 200:
+                    watchdog.note_fetch_failure(f"HTTP {fetch_result.status_code}")
                     network_was_down = True
                     log(f"Error: Wrong response code: {fetch_result.status_code}")
                     continue
 
+                watchdog.note_fetch_success()
+                utils.show_status(watchdog.snapshot().text)
                 # 5. Compute replay cutoffs on the explicit OREF timezone basis so
                 #    startup and recovery work correctly on machines outside Israel.
                 now = current_oref_time()

@@ -2,6 +2,7 @@ import time
 from pathlib import Path
 from datetime import datetime
 from typing import Callable
+import shutil
 import sys
 
 import yaml
@@ -9,6 +10,7 @@ from israel_map import IsraelMap
 
 BASE_DIR = Path(__file__).resolve().parent
 _LOG_TIME_SINK: Callable[[str], None] | None = None
+_TERMINAL_LINE_WIDTH = max(20, shutil.get_terminal_size(fallback=(80, 24)).columns)
 
 
 def set_log_time_sink(sink: Callable[[str], None] | None) -> None:
@@ -16,6 +18,14 @@ def set_log_time_sink(sink: Callable[[str], None] | None) -> None:
     _LOG_TIME_SINK = sink
 
 def log(msg):
+    _emit_runtime_line(msg, persist=True)
+
+
+def show_status(msg):
+    _emit_runtime_line(msg, persist=False)
+
+
+def _emit_runtime_line(msg, *, persist: bool):
     now = datetime.now()
     if _LOG_TIME_SINK is not None:
         try:
@@ -23,9 +33,15 @@ def log(msg):
         except Exception:
             pass
     now_text = now.strftime("%d%B_%H%M.%S")
-    with open("log.txt", "a", encoding="utf-8") as handle:
-        handle.write(f"{now_text} {msg}\n")
-    sys.stdout.write(f"\r{' ' * 80}\r{now_text} {msg[:80]}")
+    if persist:
+        with open("log.txt", "a", encoding="utf-8") as handle:
+            handle.write(f"{now_text} {msg}\n")
+    # 1. Detect terminal width once at program launch and keep the runtime output
+    #    width stable for the whole session.
+    # 2. Trim the visible line to that width so the carriage-return redraw clears
+    #    only the current terminal row instead of assuming 80 columns.
+    line_text = f"{now_text} {msg}"
+    sys.stdout.write(f"\r{' ' * _TERMINAL_LINE_WIDTH}\r{line_text[:_TERMINAL_LINE_WIDTH]}")
     sys.stdout.flush()
 
 def sleep_with_ui(map_view: IsraelMap, seconds: float) -> bool:
