@@ -16,6 +16,7 @@ from alert_model import current_oref_time, decode_alert_text, normalize_live_ale
 from alert_render import draw_alert, persist_alert_artifacts
 from israel_map import IsraelMap
 from utils import log
+from watchdog import WatchdogMonitor
 
 
 TEST = False
@@ -132,6 +133,10 @@ def main() -> None:
     known_lookup: set[str] = set()
     history_client = AlertHistoryClient(URL_HISTORY, REQUEST_TIMEOUT)
     expiry_manager = AlertExpiryManager()
+    watchdog = WatchdogMonitor(
+        poll_interval_seconds=POLL_INTERVAL_SECONDS,
+        request_timeout=REQUEST_TIMEOUT,
+    )
     fetcher: AlertFetcher | None = None
     startup_replay_done = TEST
     network_was_down = False
@@ -150,18 +155,28 @@ def main() -> None:
             url=URL_ALERTS,
             poll_interval=POLL_INTERVAL_SECONDS,
             timeout=REQUEST_TIMEOUT,
+            watchdog=watchdog,
         )
         fetcher.start()
 
     try:
         while map_view.is_open():
+            watchdog.note_ui_heartbeat()
+            watchdog_snapshot = watchdog.snapshot()
+            map_view.set_watchdog_status(
+                watchdog_snapshot.text,
+                level=watchdog_snapshot.level,
+                pulse_on=watchdog_snapshot.pulse_on,
+            )
             # 3. Let time-based cleanup run continuously, even while the app is idle
             #    or the network is temporarily unavailable.
             expiry_manager.expire_due_markers(map_view, log_fn=log)
             alerts_to_process: list[tuple[object, str]] = []
 
             if TEST:
+                watchdog.note_fetch_attempt()
                 test_alert, alert_text = load_test_alert()
+                watchdog.note_pipeline_update()
                 if test_alert is not None:
                     alerts_to_process.append((test_alert, alert_text))
             else:
@@ -171,6 +186,7 @@ def main() -> None:
                     if not utils.sleep_with_ui(map_view, 0.1):
                         break
                     continue
+                watchdog.note_pipeline_update()
                 if fetch_result.error_type is not None:
                     network_was_down = True
                     log(

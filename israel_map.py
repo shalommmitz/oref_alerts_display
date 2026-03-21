@@ -166,10 +166,35 @@ class IsraelMap:
         "tooltip_fg": "#f5f6f7",
         "tooltip_border": "#5a6168",
     }
+    _WATCHDOG_COLORS = {
+        "ok": {
+            "panel_bg": "#edf7f1",
+            "panel_border": "#9dbca8",
+            "text": "#214533",
+            "icon_on": "#2f9e61",
+            "icon_off": "#b8ddc7",
+        },
+        "warn": {
+            "panel_bg": "#fff4dc",
+            "panel_border": "#d6b779",
+            "text": "#6d4d17",
+            "icon_on": "#d58a00",
+            "icon_off": "#efd7a5",
+        },
+        "stale": {
+            "panel_bg": "#fbe7e7",
+            "panel_border": "#d29b9b",
+            "text": "#7a1f1f",
+            "icon_on": "#d14949",
+            "icon_off": "#e8bbbb",
+        },
+    }
     _SETTINGS_FILENAME = "settings.yaml"
     _DEFAULT_SAVE_INCLUDE_DATETIME = True
     _DEFAULT_SAVE_BASE_NAME = "alerts_map"
     _DEFAULT_SAVE_SCALE = "100"
+    _STATUS_EDGE_MARGIN = 8
+    _STATUS_STACK_GAP = 8
 
     def __init__(
         self,
@@ -186,13 +211,15 @@ class IsraelMap:
         self.padding = max(0, padding)
         self.bounds = _MapBounds()
         self._closed = False
-        self._drawn_items: list[int] = []
-        self._drawn_markers: list[_DrawCommand] = []
+        self._drawn_markers: dict[int, _DrawCommand] = {}
         self._control_window_id: int | None = None
         self._tooltips: list[_Tooltip] = []
         self._modal_dialog: tk.Toplevel | None = None
         self._log_time_background_id: int | None = None
         self._log_time_text_id: int | None = None
+        self._watchdog_background_id: int | None = None
+        self._watchdog_icon_id: int | None = None
+        self._watchdog_text_id: int | None = None
         self._save_include_datetime_var: tk.BooleanVar | None = None
         self._save_base_name_var: tk.StringVar | None = None
         self._save_scale_var: tk.StringVar | None = None
@@ -281,8 +308,7 @@ class IsraelMap:
                 outline=draw_color,
             )
 
-        self._drawn_items.append(item_id)
-        self._drawn_markers.append(_DrawCommand(latitude, longitude, color, shape, size))
+        self._drawn_markers[item_id] = _DrawCommand(latitude, longitude, color, shape, size)
         self._raise_overlays()
         if refresh is None:
             refresh = self.auto_refresh
@@ -294,14 +320,12 @@ class IsraelMap:
         """Remove one previously drawn marker by canvas item id."""
         # 1. Ignore unknown ids so callers can safely expire markers that were
         #    already removed by a manual map clear or window shutdown.
-        # 2. Keep `_drawn_items` and `_drawn_markers` aligned so saved-image output
-        #    reflects only the markers that are still visible.
-        if item_id not in self._drawn_items:
+        # 2. Keep marker removal O(1) so expiring many markers does not turn into
+        #    repeated linear scans on the Tk thread.
+        if item_id not in self._drawn_markers:
             return False
 
-        marker_index = self._drawn_items.index(item_id)
-        self._drawn_items.pop(marker_index)
-        self._drawn_markers.pop(marker_index)
+        self._drawn_markers.pop(item_id, None)
         self.canvas.delete(item_id)
         if refresh is None:
             refresh = self.auto_refresh
@@ -311,9 +335,8 @@ class IsraelMap:
 
     def reset(self, refresh: bool | None = None) -> None:
         """Restore the canvas to the original image-only state."""
-        for item_id in self._drawn_items:
+        for item_id in tuple(self._drawn_markers):
             self.canvas.delete(item_id)
-        self._drawn_items.clear()
         self._drawn_markers.clear()
         if refresh is None:
             refresh = self.auto_refresh
@@ -474,6 +497,12 @@ class IsraelMap:
             self.canvas.tag_raise(self._log_time_background_id)
         if self._log_time_text_id is not None:
             self.canvas.tag_raise(self._log_time_text_id)
+        if self._watchdog_background_id is not None:
+            self.canvas.tag_raise(self._watchdog_background_id)
+        if self._watchdog_icon_id is not None:
+            self.canvas.tag_raise(self._watchdog_icon_id)
+        if self._watchdog_text_id is not None:
+            self.canvas.tag_raise(self._watchdog_text_id)
         if self._control_window_id is not None:
             self.canvas.tag_raise(self._control_window_id)
 
@@ -481,8 +510,6 @@ class IsraelMap:
         if self._closed or not self.root.winfo_exists():
             return
 
-        x = 10
-        y = self.height - 8
         if self._log_time_background_id is None:
             self._log_time_background_id = self.canvas.create_rectangle(
                 0,
@@ -495,27 +522,134 @@ class IsraelMap:
             )
         if self._log_time_text_id is None:
             self._log_time_text_id = self.canvas.create_text(
-                x,
-                y,
+                0,
+                0,
                 text=timestamp,
                 anchor="sw",
                 fill="#394047",
-                font=("TkDefaultFont", 10, "bold"),
+                font=("TkDefaultFont", 20, "bold"),
             )
         else:
-            self.canvas.coords(self._log_time_text_id, x, y)
             self.canvas.itemconfigure(self._log_time_text_id, text=timestamp)
-
-        bbox = self.canvas.bbox(self._log_time_text_id)
-        if bbox is not None:
-            self.canvas.coords(
-                self._log_time_background_id,
-                bbox[0] - 6,
-                bbox[1] - 4,
-                bbox[2] + 6,
-                bbox[3] + 4,
-            )
+        self._layout_log_timestamp_panel()
         self._raise_overlays()
+
+    def set_watchdog_status(self, text: str, *, level: str, pulse_on: bool) -> None:
+        if self._closed or not self.root.winfo_exists():
+            return
+
+        # 1. Keep the watchdog in the lower-right corner so it does not increase
+        #    the window height and stays separated from the control buttons.
+        # 2. A pulsing icon makes it obvious when the UI loop itself has stopped
+        #    progressing, because the pulse will freeze in place.
+        colors = self._WATCHDOG_COLORS.get(level, self._WATCHDOG_COLORS["stale"])
+        if self._watchdog_text_id is None:
+            self._watchdog_text_id = self.canvas.create_text(
+                0,
+                0,
+                text=text,
+                anchor="sw",
+                fill=colors["text"],
+                font=("TkDefaultFont", 9, "bold"),
+            )
+        else:
+            self.canvas.itemconfigure(self._watchdog_text_id, text=text, fill=colors["text"])
+        self._layout_watchdog_panel(colors, pulse_on)
+        self._layout_log_timestamp_panel()
+        self._raise_overlays()
+
+    def _layout_log_timestamp_panel(self) -> None:
+        if self._log_time_text_id is None or self._log_time_background_id is None:
+            return
+
+        panel_left = self._STATUS_EDGE_MARGIN
+        panel_bottom = self.height - self._STATUS_EDGE_MARGIN
+        if self._watchdog_background_id is not None:
+            watchdog_bbox = self.canvas.bbox(self._watchdog_background_id)
+            if watchdog_bbox is not None:
+                panel_bottom = watchdog_bbox[1] - self._STATUS_STACK_GAP
+
+        text_x = panel_left + 6
+        text_y = panel_bottom - 4
+        self.canvas.coords(self._log_time_text_id, text_x, text_y)
+        bbox = self.canvas.bbox(self._log_time_text_id)
+        if bbox is None:
+            return
+        self.canvas.coords(
+            self._log_time_background_id,
+            bbox[0] - 6,
+            bbox[1] - 4,
+            bbox[2] + 6,
+            bbox[3] + 4,
+        )
+
+    def _layout_watchdog_panel(self, colors: dict[str, str], pulse_on: bool) -> None:
+        if self._watchdog_text_id is None:
+            return
+
+        panel_left = self._STATUS_EDGE_MARGIN
+        panel_bottom = self.height - self._STATUS_EDGE_MARGIN
+        text_x = panel_left + 21
+        text_y = panel_bottom - 4
+        self.canvas.coords(self._watchdog_text_id, text_x, text_y)
+        text_bbox = self.canvas.bbox(self._watchdog_text_id)
+        if text_bbox is None:
+            return
+
+        icon_radius = 4
+        icon_gap = 9
+        icon_cx = panel_left + 12
+        icon_cy = (text_bbox[1] + text_bbox[3]) / 2
+        icon_fill = colors["icon_on"] if pulse_on else colors["icon_off"]
+        if self._watchdog_icon_id is None:
+            self._watchdog_icon_id = self.canvas.create_oval(
+                icon_cx - icon_radius,
+                icon_cy - icon_radius,
+                icon_cx + icon_radius,
+                icon_cy + icon_radius,
+                fill=icon_fill,
+                outline=colors["panel_border"],
+                width=1,
+            )
+        else:
+            self.canvas.coords(
+                self._watchdog_icon_id,
+                icon_cx - icon_radius,
+                icon_cy - icon_radius,
+                icon_cx + icon_radius,
+                icon_cy + icon_radius,
+            )
+            self.canvas.itemconfigure(
+                self._watchdog_icon_id,
+                fill=icon_fill,
+                outline=colors["panel_border"],
+            )
+
+        panel_top = text_bbox[1] - 4
+        panel_right = text_bbox[2] + 8
+        if self._watchdog_background_id is None:
+            self._watchdog_background_id = self.canvas.create_rectangle(
+                panel_left,
+                panel_top,
+                panel_right,
+                panel_bottom,
+                fill=colors["panel_bg"],
+                outline=colors["panel_border"],
+                width=1,
+            )
+        else:
+            self.canvas.coords(
+                self._watchdog_background_id,
+                panel_left,
+                panel_top,
+                panel_right,
+                panel_bottom,
+            )
+            self.canvas.itemconfigure(
+                self._watchdog_background_id,
+                fill=colors["panel_bg"],
+                outline=colors["panel_border"],
+            )
 
     def _resolve_control_command(self, action: str | None) -> callable:
         if action == "clear_map":
@@ -762,7 +896,7 @@ class IsraelMap:
     def _render_current_map_image(self) -> Image.Image:
         image = self._background_image.copy()
         draw = ImageDraw.Draw(image)
-        for marker in self._drawn_markers:
+        for marker in self._drawn_markers.values():
             x, y = self._latlon_to_xy(marker.latitude, marker.longitude)
             color = self._resolve_draw_color(marker.color)
             half = marker.size / 2

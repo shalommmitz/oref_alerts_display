@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from heapq import heappop, heappush
 from typing import Callable
 
 from alert_model import AlertEvent, current_oref_time, ensure_oref_datetime
@@ -12,12 +13,13 @@ from israel_map import IsraelMap
 
 
 EVENT_ENDED_TTL = timedelta(minutes=10)
+MAX_EXPIRY_REMOVALS_PER_PASS = 100
 
 
-@dataclass(frozen=True)
+@dataclass(order=True, frozen=True)
 class _PendingExpiry:
-    item_id: int
     expires_at: datetime
+    item_id: int
 
 
 class AlertExpiryManager:
@@ -47,7 +49,7 @@ class AlertExpiryManager:
             appeared_at = current_oref_time()
         expires_at = appeared_at + EVENT_ENDED_TTL
         for item_id in marker_ids:
-            self._pending.append(_PendingExpiry(item_id=item_id, expires_at=expires_at))
+            heappush(self._pending, _PendingExpiry(expires_at=expires_at, item_id=item_id))
 
     def expire_due_markers(
         self,
@@ -55,24 +57,25 @@ class AlertExpiryManager:
         *,
         now: datetime | None = None,
         log_fn: Callable[[str], None] | None = None,
+        max_removals: int = MAX_EXPIRY_REMOVALS_PER_PASS,
     ) -> int:
         # 1. Walk the pending list once and keep only markers whose deadline has
         #    not been reached yet.
-        # 2. Marker deletion is delegated to `IsraelMap` so the canvas state and
-        #    the saved marker list stay in sync.
+        # 2. Limit the number of Tk canvas deletions per pass so a large expiry
+        #    batch cannot monopolize the UI thread.
         anchor = ensure_oref_datetime(now) if now is not None else current_oref_time()
-        remaining: list[_PendingExpiry] = []
         cleared_count = 0
-        for pending in self._pending:
+        removal_budget = max(1, max_removals)
+        while self._pending and cleared_count < removal_budget:
+            pending = self._pending[0]
             if pending.expires_at > anchor:
-                remaining.append(pending)
-                continue
+                break
+            heappop(self._pending)
             if map_view.remove_marker(pending.item_id, refresh=False):
                 cleared_count += 1
-        self._pending = remaining
 
         # 3. Log only when real marker removals happened so the main loop output
         #    stays quiet during normal polling.
         if cleared_count and log_fn is not None:
-            log_fn(f"Cleared {cleared_count} ended-alert markers after {EVENT_ENDED_TTL}")
+            log_fn(f"Cleared {cleared_count} 10-minutes old ended-alert markers")
         return cleared_count

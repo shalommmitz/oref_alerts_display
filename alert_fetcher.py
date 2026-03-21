@@ -5,8 +5,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from queue import Empty, SimpleQueue
 from threading import Event, Thread
+from typing import TYPE_CHECKING
 
 import requests
+
+if TYPE_CHECKING:
+    from watchdog import WatchdogMonitor
 
 
 @dataclass(frozen=True)
@@ -23,10 +27,12 @@ class AlertFetcher:
         url: str,
         poll_interval: float,
         timeout: tuple[float, float],
+        watchdog: WatchdogMonitor | None = None,
     ) -> None:
         self.url = url
         self.poll_interval = poll_interval
         self.timeout = timeout
+        self.watchdog = watchdog
         self._stop_event = Event()
         self._results: SimpleQueue[FetchResult] = SimpleQueue()
         self._thread = Thread(
@@ -60,6 +66,8 @@ class AlertFetcher:
             while not self._stop_event.is_set():
                 # 2. Run the blocking HTTP request away from Tk so network stalls
                 #    do not freeze the map window.
+                if self.watchdog is not None:
+                    self.watchdog.note_fetch_attempt()
                 try:
                     response = session.get(self.url, timeout=self.timeout)
                 except requests.RequestException as exc:

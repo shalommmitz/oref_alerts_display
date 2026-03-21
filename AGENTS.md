@@ -19,6 +19,7 @@ Current repo contents relevant to runtime behavior:
 
 - `show_alerts`: main executable script
 - `alert_fetcher.py`: background live-alert polling worker
+- `watchdog.py`: thread-safe health monitor for UI and fetch-attempt heartbeat
 - `alert_expiry.py`: time-based cleanup for auto-cleared markers
 - `alert_history.py`: history replay client for startup and recovery
 - `alert_model.py`: alert normalization helpers
@@ -51,6 +52,7 @@ Main loop responsibilities:
 - after a network interruption, replay history rows newer than the last successful live poll
 - normalize live alerts and history rows into one shared runtime shape
 - compute replay timing on the explicit `Asia/Jerusalem` timezone basis
+- update the watchdog overlay with UI heartbeat and update-age information
 - de-duplicate alerts before drawing
 - save the last processed alert to `last_alert.yaml`
 - map each alerted locality to coordinates
@@ -88,9 +90,22 @@ This module owns the blocking live HTTP polling.
 Key behaviors:
 
 - runs `requests.get()` on a background thread
+- records when each fetch attempt starts
 - returns only the newest available result to the UI thread
 - uses the same timeout policy as the main runtime
 - keeps Tk responsive during network stalls
+
+### `watchdog.py`
+
+This module tracks liveness and progress for the operator-facing status overlay.
+
+Key behaviors:
+
+- uses monotonic time for all ages and thresholds
+- tracks UI heartbeat from the main loop
+- tracks fetch attempts from the worker thread
+- tracks end-to-end update age from the main thread
+- computes `ok`, `warn`, and `stale` states for the overlay
 
 ### `alert_history.py`
 
@@ -113,6 +128,7 @@ Key behaviors:
 - expires those markers 10 minutes after alert appearance
 - uses history timestamps when available so replayed rows expire on their original timeline
 - computes expiry deadlines on the explicit `Asia/Jerusalem` timezone basis
+- limits marker deletions per pass so large expiry batches do not block the UI thread for long stretches
 - removes the exact drawn marker ids instead of painting over map locations
 
 ### `alert_model.py`
@@ -163,6 +179,7 @@ Key behaviors:
 - optionally resizes and pads the image
 - converts latitude/longitude into image coordinates using a calibrated transform
 - draws markers on a `tk.Canvas`
+- renders a compact upper-right watchdog overlay without increasing window height
 - supports both blocking and non-blocking usage
 
 Public methods:
@@ -207,6 +224,13 @@ Current transform details:
 - is not a GIS projection
 
 These constants are implementation-critical. If calibration changes, update them in one place inside `_latlon_to_xy()`.
+
+Marker bookkeeping details:
+
+- active markers are stored by canvas item id
+- `remove_marker()` is expected to stay O(1)
+- image export iterates the remaining markers in insertion order
+- watchdog overlay items are raised with the other canvas overlays
 
 ### `align_map`
 
@@ -386,6 +410,8 @@ Canonical names in this repository:
 - The official history endpoint has been observed to return HTTP 200 with an empty body when there are no recent alerts.
 - Only the semantic "האירוע הסתיים" alert type auto-clears after 10 minutes; other markers remain until manually cleared.
 - Replay timing correctness depends on interpreting OREF timestamps in `Asia/Jerusalem`, not in the consuming machine's local timezone.
+- Large batches of expired markers should be processed incrementally; avoid reintroducing unbounded O(n^2) marker removal on the Tk thread.
+- The watchdog reports fetch attempts and overall update age; it intentionally does not treat network failure as a software freeze by itself.
 
 ## Recommended Verification After Changes
 
