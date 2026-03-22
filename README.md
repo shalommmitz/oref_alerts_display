@@ -18,6 +18,7 @@ The goal of this project is fast local response and reduced dependence on third-
 - `show_alerts`: main runtime script. Polls alerts, resolves localities, and draws them.
 - `alert_fetcher.py`: background polling thread for the live alert endpoint.
 - `watchdog.py`: thread-safe health monitor for UI heartbeat, fetch attempts, update age, and Online/Offline status.
+- `alert_audio.py`: asynchronous audio playback for audible alert notifications.
 - `alert_expiry.py`: time-based cleanup for alert markers that should disappear automatically.
 - `alert_history.py`: history replay client for startup catch-up and outage recovery.
 - `alert_model.py`: normalization helpers for live alerts and history rows.
@@ -32,6 +33,7 @@ The goal of this project is fast local response and reduced dependence on third-
 - `locality_latitude_longitude.yaml`: generated locality-to-coordinate lookup table used at runtime.
 - `align_map_points.yaml`: generated calibration control points captured with `align_map`.
 - `convert_localities.py`: regenerates `locality_latitude_longitude.yaml` from `localities.yaml`, backfilling missing names from `cities.json`.
+- `create_venv`: recreates the local virtual environment and installs dependencies from `requirements.txt`.
 - `israel_outline.png`: map background image used by `IsraelMap`.
 - `requirements.txt`: pip-installable Python dependencies.
 
@@ -41,6 +43,7 @@ The goal of this project is fast local response and reduced dependence on third-
 - `requests`
 - `PyYAML`
 - `Pillow`
+- `pygame`
 - `tkinter`
 
 Example install in a normal Python environment:
@@ -53,6 +56,26 @@ Notes:
 
 - `tkinter` is usually installed through the OS package manager, not `pip`.
 - The map window needs a graphical display. In a headless container or server, you need an X server or equivalent display backend.
+- Audible alerts use `pygame` to play `ocean_4s.mp3`. If the machine has no working audio backend, the app logs the problem and continues without crashing.
+
+## Quick Start With `create_venv`
+
+The repository includes a helper script that recreates a local virtual environment and installs the current dependencies:
+
+```bash
+./create_venv
+. v
+./show_alerts
+```
+
+What `create_venv` does:
+
+- removes any existing `venv`
+- creates a fresh `venv`
+- writes a small helper file `v` containing `. venv/bin/activate`
+- installs from `requirements.txt`
+
+This is the recommended local setup flow for this repository.
 
 ## Running The Alert Viewer
 
@@ -64,7 +87,7 @@ What happens:
 
 - A background thread polls `https://www.oref.org.il/warningMessages/alert/Alerts.json`.
 - The Tk thread stays responsive while waiting for network results.
-- On the first successful contact, the script replays the previous two minutes of history from the history endpoint, in old-to-new order.
+- On the first successful contact, the script replays the previous five minutes of history from the history endpoint, in old-to-new order.
 - After a network interruption, the script fetches history since the last successful live poll and replays any missed alerts.
 - Live alerts and replayed alerts are normalized into the same runtime shape.
 - Replay and expiry timing are anchored to `Asia/Jerusalem`, so they do not depend on the consuming machine's local timezone.
@@ -72,12 +95,18 @@ What happens:
 - Each alerted locality is matched against the local coordinate table and drawn on the map.
 - "Event ended" markers are automatically removed 10 minutes after their alert appearance time.
 - Expired markers are cleared incrementally so large expiry batches do not monopolize the UI thread.
+- The map window exposes a standard top menu inside the canvas: `File`, `Edit`, and `Help`.
+- `File` includes `Save`, `Settings`, and `Exit`; `Edit` includes `Clear`; `Help` includes `Color Legend` and `About`.
+- `Settings` stores both image-save preferences and alert-notification preferences in `settings.yaml`.
+- If `Bring Window to Front` is enabled, non-startup alerts raise the map window above other windows.
+- If `Play Audible Alert` is enabled, non-startup alerts play `ocean_4s.mp3`.
+- Focus-jump and audible-alert notifications share a 10-second cooldown, so alert bursts do not repeatedly steal focus or replay sound.
 - A compact lower-left watchdog shows a pulsing alive icon and `Online` or `Offline`.
 
 Current alert color mapping:
 
 - `cat == "1"` (missile attack) -> `red`
-- `cat == "2"` or `cat == "6"` (UAV / older matrix id 6) -> `orange`
+- `cat == "2"` or `cat == "6"` (UAV / older matrix id 6) -> `purple`
 - title `בדקות הקרובות צפויות להתקבל התרעות באזורך` -> `yellow`
 - title `האירוע הסתיים` -> `gray`
 
@@ -126,7 +155,7 @@ while map_view.is_open():
 
 Supported draw parameters:
 
-- Colors: `white`, `black`, `blue`, `red`, `green`, `gray`, `orange`, `background`
+- Colors: `white`, `black`, `blue`, `purple`, `red`, `green`, `gray`, `orange`, `background`
 - Shapes: `circle`, `rect`, `square`
 - Size: pixel diameter or width
 - `draw()` now returns the canvas item id for the created marker, which can be passed to `remove_marker()`.
@@ -178,6 +207,10 @@ The runtime code expects that generated file to exist in the project directory.
 - The background image is loaded from `israel_outline.png` by default.
 - Coordinate placement uses a calibrated normalized lat/lon transform fitted against control points collected on the current outline asset. Do not assume the current mapping is a pure geographic projection.
 - All shapes share the same coordinate transform.
+- When `show_controls=True`, `IsraelMap` creates an in-canvas menu strip that overlays the top of the image instead of increasing the window height.
+- The Settings dialog includes `Image Save Options` and `Alert Notification`, and persists both sections to `settings.yaml`.
+- Startup history replay does not trigger focus-jump or audio notifications, but live alerts and recovery replay alerts do.
+- Operator notifications use one shared 10-second cooldown across focus-jump and audio playback.
 - `IsraelMap.remove_marker()` removes a specific marker without affecting later markers drawn at the same locality.
 - `localities.yaml` has priority over `cities.json` when generating the runtime locality lookup.
 - The alert endpoint may return UTF-8 BOM-prefixed JSON. `show_alerts` handles this explicitly.

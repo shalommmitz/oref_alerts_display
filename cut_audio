@@ -1,0 +1,15 @@
+#ffmpeg -i ocean_full.mp3 -ss 0 -t 4 -c copy ocean.mp3
+#ffmpeg -i ocean_full.mp3 -ss 0 -t 4 -c:a flac ocean_4s.flac
+#ffmpeg -i ocean_4s.flac -ss 0 -t 4 ocean.mp3
+#ffmpeg -i ocean_full_reencoded.wav -ss 00:00:00 -t 00:00:04 ocean.mp3
+#ffmpeg -v error -nostdin -y -i ocean_full.mp3 -f s16le -acodec pcm_s16le -ac 2 -ar 44100 ocean_full.raw
+#head -c 400000 ocean_full.raw | tail -c 360000 >ocean_4s.raw
+#lame -r -s 44.1 --bitwidth 16 --signed --little-endian ocean_4s.raw ocean_4s.mp3
+rm ocean_4s.*
+rm ocean*.raw
+exit
+ffmpeg -i ocean_full.mp3 -f s16le -ac 2 -ar 44100 ocean_full.raw
+dd if=ocean_full.raw of=ocean_4s.raw bs=176400 count=4
+lame -r -s 44.1 --bitwidth 16 --signed --little-endian ocean_4s.raw ocean_4s.mp3
+
+

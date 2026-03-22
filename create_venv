@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+rm -rf venv
+python3 -m venv venv
+printf '. venv/bin/activate\n' > v
+
+requirements_file="requirements.txt"
+if [[ ! -f "${requirements_file}" && -f "requirments.txt" ]]; then
+    requirements_file="requirments.txt"
+fi
+
+if [[ ! -f "${requirements_file}" ]]; then
+    echo "No requirements file found." >&2
+    exit 1
+fi
+
+./venv/bin/python -m pip install --upgrade pip setuptools wheel
+./venv/bin/python -m pip install -r "${requirements_file}"

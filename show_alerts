@@ -5,10 +5,12 @@ from __future__ import annotations
 import os
 from datetime import datetime, timedelta
 from pathlib import Path
+from time import monotonic
 
 import yaml
 
 import utils
+from alert_audio import AudioAlertPlayer
 from alert_expiry import AlertExpiryManager
 from alert_fetcher import AlertFetcher
 from alert_history import AlertHistoryClient
@@ -22,7 +24,8 @@ from watchdog import WatchdogMonitor
 TEST = False
 REQUEST_TIMEOUT = (3.05, 5)
 POLL_INTERVAL_SECONDS = 10
-OREF_REPLAY_LOOKBACK_SECONDS = 120
+OREF_REPLAY_LOOKBACK_SECONDS = 300
+NOTIFICATION_COOLDOWN_SECONDS = 10
 MAX_KNOWN_ALERTS = 2000
 URL_ALERTS = os.environ.get(
     "OREF_ALERTS_URL",
@@ -35,6 +38,7 @@ URL_HISTORY = os.environ.get(
 TEST_ALERT_PATH = "last_alert.yaml"
 
 BASE_DIR = Path(__file__).resolve().parent
+ALERT_SOUND_PATH = BASE_DIR / "ocean_4s.mp3"
 
 
 def remember_alert(alert_key: str, known_order: list[str], known_lookup: set[str]) -> None:
@@ -65,8 +69,8 @@ def fetch_replay_alerts(
     network_was_down: bool,
     last_live_success_at: datetime | None,
     now: datetime,
-) -> tuple[list[object], bool]:
-    # 1. Startup replay asks for the preceding two minutes once, after the first
+) -> tuple[list[object], bool, str | None]:
+    # 1. Startup replay asks for the preceding five minutes once, after the first
     #    successful contact with the live endpoint.
     # 2. Recovery replay asks only for alerts newer than the last known live success.
     if not startup_replay_done:
@@ -76,17 +80,17 @@ def fetch_replay_alerts(
         replay_label = "recovery"
         replay_since = last_live_success_at
     else:
-        return [], startup_replay_done
+        return [], startup_replay_done, None
 
     try:
         replay_alerts = history_client.fetch_since(replay_since)
     except Exception as exc:
         log(f"Error: could not fetch {replay_label} history ({exc.__class__.__name__}: {exc})")
-        return [], True
+        return [], True, replay_label
 
     if replay_alerts:
         log(f"Replaying {len(replay_alerts)} history alerts from {replay_label}")
-    return replay_alerts, True
+    return replay_alerts, True, replay_label
 
 
 def handle_alert(
@@ -124,6 +128,7 @@ def handle_alert(
 def main() -> None:
     coords = utils.get_coords()
     map_view = IsraelMap(auto_refresh=False, show_controls=True)
+    audio_player = AudioAlertPlayer(ALERT_SOUND_PATH, log_fn=log)
     utils.set_log_time_sink(map_view.set_log_timestamp)
 
     # 1. Keep the runtime state close to the top-level loop so the main control
@@ -144,6 +149,7 @@ def main() -> None:
     network_was_down = False
     last_live_success_at: datetime | None = None
     last_watchdog_state: tuple[str, str] | None = None
+    last_operator_notification_at: float | None = None
 
     biggest_alert_size = 0
     biggest_alert_path = BASE_DIR / "biggest_alert.yaml"
@@ -181,7 +187,7 @@ def main() -> None:
             # 3. Let time-based cleanup run continuously, even while the app is idle
             #    or the network is temporarily unavailable.
             expiry_manager.expire_due_markers(map_view, log_fn=log)
-            alerts_to_process: list[tuple[object, str]] = []
+            alerts_to_process: list[tuple[object, str, str]] = []
 
             if TEST:
                 watchdog.note_fetch_attempt()
@@ -190,7 +196,7 @@ def main() -> None:
                 watchdog.note_pipeline_update()
                 utils.show_status(watchdog.snapshot().text)
                 if test_alert is not None:
-                    alerts_to_process.append((test_alert, alert_text))
+                    alerts_to_process.append((test_alert, alert_text, "test"))
             else:
                 # 4. Poll the worker thread and keep the UI responsive while we wait.
                 fetch_result = fetcher.poll()
@@ -221,7 +227,7 @@ def main() -> None:
                 #    startup and recovery work correctly on machines outside Israel.
                 now = current_oref_time()
                 alert_text = decode_alert_text(fetch_result.content or b"")
-                replay_alerts, startup_replay_done = fetch_replay_alerts(
+                replay_alerts, startup_replay_done, replay_label = fetch_replay_alerts(
                     history_client,
                     startup_replay_done=startup_replay_done,
                     network_was_down=network_was_down,
@@ -233,7 +239,8 @@ def main() -> None:
 
                 for replay_alert in replay_alerts:
                     replay_text = str(replay_alert.raw)
-                    alerts_to_process.append((replay_alert, replay_text))
+                    replay_source = "startup_replay" if replay_label == "startup" else "recovery_replay"
+                    alerts_to_process.append((replay_alert, replay_text, replay_source))
 
                 try:
                     live_alert = parse_live_alert_text(alert_text)
@@ -244,9 +251,11 @@ def main() -> None:
                     continue
                 if live_alert is not None:
                     log("Alert fetched")
-                    alerts_to_process.append((live_alert, alert_text))
+                    alerts_to_process.append((live_alert, alert_text, "live"))
 
-            for alert, alert_text in alerts_to_process:
+            should_notify_operator = False
+            for alert, alert_text, alert_source in alerts_to_process:
+                is_new_alert = alert.key not in known_lookup
                 biggest_alert_size = handle_alert(
                     alert,
                     alert_text=alert_text,
@@ -259,6 +268,33 @@ def main() -> None:
                     expiry_manager=expiry_manager,
                     marker_registry=marker_registry,
                 )
+                if is_new_alert and alert_source != "startup_replay":
+                    should_notify_operator = True
+
+            if should_notify_operator:
+                # 1. Startup replay is intentionally excluded so the window does
+                #    not steal focus or play sound on launch just because old
+                #    history rows were recovered.
+                # 2. Live alerts, recovery replays, and explicit end-of-event
+                #    alerts all count as real runtime notifications.
+                # 3. Apply one shared cooldown across focus-jump and audio so a
+                #    burst of alerts cannot overload the operator every second.
+                focus_enabled = map_view.focus_on_alert_enabled()
+                audio_enabled = map_view.audible_alert_enabled()
+                notifications_enabled = focus_enabled or audio_enabled
+                cooldown_elapsed = False
+                if notifications_enabled:
+                    now_monotonic = monotonic()
+                    cooldown_elapsed = (
+                        last_operator_notification_at is None
+                        or (now_monotonic - last_operator_notification_at) >= NOTIFICATION_COOLDOWN_SECONDS
+                    )
+                if focus_enabled and cooldown_elapsed:
+                    map_view.present_window()
+                if audio_enabled and cooldown_elapsed:
+                    audio_player.play()
+                if notifications_enabled and cooldown_elapsed:
+                    last_operator_notification_at = now_monotonic
 
             if not map_view.update():
                 break
@@ -267,6 +303,7 @@ def main() -> None:
     finally:
         if fetcher is not None:
             fetcher.stop()
+        audio_player.close()
         map_view.close()
         utils.set_log_time_sink(None)
 

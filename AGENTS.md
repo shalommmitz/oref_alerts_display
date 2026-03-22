@@ -20,6 +20,7 @@ Current repo contents relevant to runtime behavior:
 - `show_alerts`: main executable script
 - `alert_fetcher.py`: background live-alert polling worker
 - `watchdog.py`: thread-safe health monitor for UI heartbeat, fetch attempts, update age, and Online/Offline state
+- `alert_audio.py`: asynchronous audible alert playback helper
 - `alert_expiry.py`: time-based cleanup for auto-cleared markers
 - `alert_history.py`: history replay client for startup and recovery
 - `alert_model.py`: alert normalization helpers
@@ -29,6 +30,7 @@ Current repo contents relevant to runtime behavior:
 - `map_reference_usage.py`: reference integration loop with placeholder `fetch_coords()`
 - `align_map`: interactive calibration helper for collecting control points on the outline image
 - `convert_localities.py`: one-shot data conversion script
+- `create_venv`: helper script that recreates `venv` and installs repo dependencies
 - `localities.yaml`: large source dataset of Israeli localities
 - `cities.json`: fallback locality dataset with broader coverage
 - `locality_latitude_longitude.yaml`: generated runtime lookup table
@@ -48,7 +50,7 @@ Main loop responsibilities:
 - create `IsraelMap(auto_refresh=False)`
 - start a background live-alert fetcher thread
 - decode the live response using `utf-8-sig` because the endpoint may include a UTF-8 BOM
-- on first successful contact, replay the preceding two minutes of history in old-to-new order
+- on first successful contact, replay the preceding five minutes of history in old-to-new order
 - after a network interruption, replay history rows newer than the last successful live poll
 - normalize live alerts and history rows into one shared runtime shape
 - compute replay timing on the explicit `Asia/Jerusalem` timezone basis
@@ -58,13 +60,14 @@ Main loop responsibilities:
 - map each alerted locality to coordinates
 - choose a drawing color from alert category
 - draw a circle marker for each matched locality
+- optionally raise the window and play a sound for non-startup alerts, based on persisted settings
 - automatically remove "האירוע הסתיים" markers 10 minutes after their appearance time
 - pump the Tk event loop once per iteration with `map_view.update()`
 
 Current alert category mapping in `show_alerts`:
 
 - `cat == "1"` -> `red`
-- `cat == "2"` or `cat == "6"` -> `orange`
+- `cat == "2"` or `cat == "6"` -> `purple`
 - title `בדקות הקרובות צפויות להתקבל התרעות באזורך` -> `yellow`
 - title `האירוע הסתיים` -> `gray`
 
@@ -80,7 +83,7 @@ Configurable endpoints:
 
 Current replay window:
 
-- startup replay: 120 seconds
+- startup replay: 300 seconds
 - recovery replay: from the last successful live poll forward
 
 ### `alert_fetcher.py`
@@ -181,8 +184,10 @@ Key behaviors:
 - optionally resizes and pads the image
 - converts latitude/longitude into image coordinates using a calibrated transform
 - draws markers on a `tk.Canvas`
+- creates an in-canvas `File/Edit/Help` menu strip when `show_controls=True`
 - renders a compact lower-left watchdog overlay without increasing window height
 - supports both blocking and non-blocking usage
+- persists both image-save and alert-notification settings in `settings.yaml`
 
 Public methods:
 
@@ -200,6 +205,7 @@ Supported colors:
 - `white`
 - `black`
 - `blue`
+- `purple`
 - `red`
 - `green`
 - `gray`
@@ -233,6 +239,33 @@ Marker bookkeeping details:
 - `remove_marker()` is expected to stay O(1)
 - image export iterates the remaining markers in insertion order
 - watchdog overlay items are raised with the other canvas overlays
+- the menu replaces the old canvas button strip and overlays the top of the image
+
+Current menu structure when `show_controls=True`:
+
+- `File` -> `Save`, `Settings`, `Exit`
+- `Edit` -> `Clear`
+- `Help` -> `Color Legend`, `About`
+
+Current Settings dialog sections:
+
+- `Image Save Options`
+- `Alert Notification`
+
+Current persisted settings in `settings.yaml`:
+
+- `include_datetime`
+- `base_name`
+- `scale_percent`
+- `focus_on_alert`
+- `audible_alert`
+
+Current alert-notification behavior:
+
+- `focus_on_alert` raises and focuses the map window for non-startup alerts
+- `audible_alert` plays `ocean_4s.mp3` for non-startup alerts
+- startup history replay does not trigger either notification
+- focus-jump and audio playback share one 10-second cooldown window
 
 ### `align_map`
 
@@ -362,12 +395,14 @@ Code-level dependencies:
 - `requests`
 - `PyYAML`
 - `Pillow`
+- `pygame`
 - `tkinter`
 
 Environment note from current scan:
 
 - in the current shell, `tkinter` and `Pillow` import successfully
 - `requests` and `yaml` do not import in the active Python environment
+- `pygame` availability was not verified in the active Python environment
 
 Implication:
 
@@ -430,7 +465,7 @@ If dependencies are available, also verify:
 - `import yaml`
 - `python3 align_map --help`
 - `show_alerts` with `TEST = True`
-- one startup run that replays the previous two minutes of history
+- one startup run that replays the previous five minutes of history
 - one manual network interruption and recovery check
 - one manual visual check of known reference localities on the map
 

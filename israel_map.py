@@ -10,6 +10,7 @@ import tkinter as tk
 from datetime import datetime
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 from PIL import Image, ImageDraw
 
@@ -23,98 +24,12 @@ class _MapBounds:
 
 
 @dataclass(frozen=True)
-class _ControlButtonSpec:
-    label: str
-    tooltip: str
-    enabled: bool = True
-    action: str | None = None
-
-
-@dataclass(frozen=True)
 class _DrawCommand:
     latitude: float
     longitude: float
     color: str
     shape: str
     size: int
-
-
-class _Tooltip:
-    def __init__(
-        self,
-        widgets: tuple[tk.Widget, ...],
-        text: str,
-        *,
-        background: str,
-        foreground: str,
-        border: str,
-    ) -> None:
-        self.widgets = widgets
-        self.text = text
-        self.background = background
-        self.foreground = foreground
-        self.border = border
-        self._tip_window: tk.Toplevel | None = None
-        self._after_id: str | None = None
-        self._anchor_widget: tk.Widget | None = None
-
-        for widget in widgets:
-            widget.bind("<Enter>", self._on_enter, add="+")
-            widget.bind("<Leave>", self._on_leave, add="+")
-            widget.bind("<ButtonPress>", self._on_leave, add="+")
-
-    def _on_enter(self, event: tk.Event) -> None:
-        self._anchor_widget = event.widget
-        self._schedule()
-
-    def _on_leave(self, _event: tk.Event) -> None:
-        self._cancel()
-        self._hide()
-
-    def _schedule(self) -> None:
-        self._cancel()
-        widget = self._anchor_widget
-        if widget is None:
-            return
-        self._after_id = widget.after(180, self._show)
-
-    def _cancel(self) -> None:
-        widget = self._anchor_widget
-        if widget is not None and self._after_id is not None:
-            widget.after_cancel(self._after_id)
-        self._after_id = None
-
-    def _show(self) -> None:
-        if self._tip_window is not None:
-            return
-        widget = self._anchor_widget
-        if widget is None or not widget.winfo_exists():
-            return
-
-        x = widget.winfo_rootx() + max(8, widget.winfo_width() - 6)
-        y = widget.winfo_rooty() + widget.winfo_height() + 8
-        self._tip_window = tk.Toplevel(widget)
-        self._tip_window.wm_overrideredirect(True)
-        self._tip_window.wm_geometry(f"+{x}+{y}")
-        label = tk.Label(
-            self._tip_window,
-            text=self.text,
-            bg=self.background,
-            fg=self.foreground,
-            bd=1,
-            relief="solid",
-            highlightthickness=1,
-            highlightbackground=self.border,
-            padx=10,
-            pady=5,
-            font=("TkDefaultFont", 9),
-        )
-        label.pack()
-
-    def _hide(self) -> None:
-        if self._tip_window is not None:
-            self._tip_window.destroy()
-            self._tip_window = None
 
 
 class IsraelMap:
@@ -124,6 +39,7 @@ class IsraelMap:
         "white",
         "black",
         "blue",
+        "purple",
         "red",
         "green",
         "yellow",
@@ -136,6 +52,7 @@ class IsraelMap:
         "white": "#ffffff",
         "black": "#000000",
         "blue": "#0057d9",
+        "purple": "#7b4bc4",
         "red": "#d81e1e",
         "green": "#1f8b4c",
         "yellow": "#d9b11f",
@@ -144,11 +61,6 @@ class IsraelMap:
     }
     _IMAGE_CANDIDATES = (
         "israel_outline.png",
-    )
-    _CONTROL_BUTTONS = (
-        _ControlButtonSpec("Clear", "Clear Map", True, "clear_map"),
-        _ControlButtonSpec("Save", "Save Map Image", True, "save_map_dialog"),
-        _ControlButtonSpec("Exit", "Close", True, "close_app"),
     )
     _CONTROL_COLORS = {
         "panel_bg": "#d8dbde",
@@ -183,11 +95,19 @@ class IsraelMap:
     _DEFAULT_SAVE_INCLUDE_DATETIME = True
     _DEFAULT_SAVE_BASE_NAME = "alerts_map"
     _DEFAULT_SAVE_SCALE = "100"
+    _DEFAULT_FOCUS_ON_ALERT = False
+    _DEFAULT_AUDIBLE_ALERT = False
     _STATUS_EDGE_MARGIN = 8
     _STATUS_STACK_GAP = 6
     _STATUS_PANEL_Y_OFFSET = 14
     _LOG_TEXT_Y_OFFSET = 6
     _STATUS_AND_BUTTON_FONT = ("TkDefaultFont", 11, "bold")
+    _LEGEND_ITEMS = (
+        ("red", "Missile / Rocket Attack", "Immediate alert for an active incoming attack."),
+        ("purple", "UAV Intrusion", "Hostile aircraft or drone intrusion alert."),
+        ("yellow", "Area Pre-Alert", "Alerts are expected in the area in the next few minutes."),
+        ("gray", "Event Ended", "The local alert event has ended and the marker will clear later."),
+    )
 
     def __init__(
         self,
@@ -205,9 +125,11 @@ class IsraelMap:
         self.bounds = _MapBounds()
         self._closed = False
         self._drawn_markers: dict[int, _DrawCommand] = {}
-        self._control_window_id: int | None = None
-        self._tooltips: list[_Tooltip] = []
+        self._menu_frame: tk.Frame | None = None
+        self._menu_window_id: int | None = None
         self._modal_dialog: tk.Toplevel | None = None
+        self._modal_kind: str | None = None
+        self._settings_dialog_snapshot: tuple[bool, str, str, bool, bool] | None = None
         self._log_time_background_id: int | None = None
         self._log_time_text_id: int | None = None
         self._watchdog_background_id: int | None = None
@@ -216,6 +138,8 @@ class IsraelMap:
         self._save_include_datetime_var: tk.BooleanVar | None = None
         self._save_base_name_var: tk.StringVar | None = None
         self._save_scale_var: tk.StringVar | None = None
+        self._focus_on_alert_var: tk.BooleanVar | None = None
+        self._audible_alert_var: tk.BooleanVar | None = None
 
         resolved_image_path = self._resolve_background_path(image_path)
         self._background_image = Image.open(resolved_image_path).convert("RGB")
@@ -241,6 +165,9 @@ class IsraelMap:
         self._save_include_datetime_var = tk.BooleanVar(master=self.root, value=True)
         self._save_base_name_var = tk.StringVar(master=self.root, value="alerts_map")
         self._save_scale_var = tk.StringVar(master=self.root, value="100")
+        self._focus_on_alert_var = tk.BooleanVar(master=self.root, value=False)
+        self._audible_alert_var = tk.BooleanVar(master=self.root, value=False)
+        self._load_save_settings()
         self.canvas = tk.Canvas(
             self.root,
             width=self.width,
@@ -253,7 +180,7 @@ class IsraelMap:
         self._background_photo = self._create_photo_image(self._background_image)
         self.canvas.create_image(0, 0, anchor="nw", image=self._background_photo)
         if show_controls:
-            self._create_controls_overlay()
+            self._create_menu_bar()
         if self.auto_refresh:
             self.process_events()
 
@@ -378,11 +305,44 @@ class IsraelMap:
         except tk.TclError:
             self._finalize_close()
 
+    def present_window(self) -> None:
+        # 1. Try the standard "raise and focus" sequence first because it works
+        #    across the mainstream desktop platforms supported by Tk.
+        # 2. Briefly toggling topmost helps some window managers actually move
+        #    the map above other windows instead of only giving it keyboard focus.
+        if self._closed or not self.root.winfo_exists():
+            return
+        try:
+            self.root.deiconify()
+            self.root.lift()
+            try:
+                self.root.attributes("-topmost", True)
+                self.root.after(250, self._clear_topmost_flag)
+            except tk.TclError:
+                pass
+            self.root.focus_force()
+        except tk.TclError:
+            return
+
+    def focus_on_alert_enabled(self) -> bool:
+        return self._focus_on_alert_value()
+
+    def audible_alert_enabled(self) -> bool:
+        return self._audible_alert_value()
+
     def _finalize_close(self) -> None:
         if not self.root.winfo_exists():
             return
         try:
             self.root.destroy()
+        except tk.TclError:
+            pass
+
+    def _clear_topmost_flag(self) -> None:
+        if self._closed or not self.root.winfo_exists():
+            return
+        try:
+            self.root.attributes("-topmost", False)
         except tk.TclError:
             pass
 
@@ -427,62 +387,84 @@ class IsraelMap:
         encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
         return tk.PhotoImage(data=encoded)
 
-    def _create_controls_overlay(self) -> None:
+    def _create_menu_bar(self) -> None:
+        # 1. Draw the menu inside the canvas so it overlays the image instead of
+        #    increasing the outer window height.
+        # 2. Keep real drop-down menus for the actions, but host them on
+        #    menubuttons inside a slim in-canvas strip.
         colors = self._CONTROL_COLORS
-        control_bar = tk.Frame(
+        self.root.configure(menu="")
+
+        menu_frame = tk.Frame(
             self.canvas,
             bg=colors["panel_bg"],
-            bd=0,
             highlightthickness=1,
             highlightbackground=colors["panel_border"],
-            padx=6,
-            pady=6,
+            bd=0,
+            padx=4,
+            pady=0,
         )
 
-        last_index = len(self._CONTROL_BUTTONS) - 1
-        for index, spec in enumerate(self._CONTROL_BUTTONS):
-            slot = tk.Frame(control_bar, bg=colors["panel_bg"])
-            slot.pack(side="left", padx=(0, 8 if index < last_index else 0))
-            button = tk.Button(
-                slot,
-                text=spec.label,
-                command=self._resolve_control_command(spec.action),
-                state=tk.NORMAL if spec.enabled else tk.DISABLED,
-                width=6,
-                padx=8,
-                pady=3,
-                bd=0,
+        def add_menu_button(
+            label: str,
+            entries: tuple[tuple[str, Callable[[], None] | None], ...],
+        ) -> None:
+            button = tk.Menubutton(
+                menu_frame,
+                text=label,
+                indicatoron=False,
                 relief="flat",
-                font=self._STATUS_AND_BUTTON_FONT,
-                bg=colors["button_bg"] if spec.enabled else colors["button_disabled_bg"],
+                bd=0,
+                padx=10,
+                pady=1,
+                bg=colors["panel_bg"],
                 fg=colors["button_fg"],
                 activebackground=colors["button_active_bg"],
                 activeforeground=colors["button_active_fg"],
-                disabledforeground=colors["button_disabled_fg"],
                 highlightthickness=0,
-                cursor="hand2" if spec.enabled else "arrow",
+                font=self._STATUS_AND_BUTTON_FONT,
                 takefocus=False,
             )
-            button.pack()
-            self._tooltips.append(
-                _Tooltip(
-                    (slot, button),
-                    spec.tooltip,
-                    background=colors["tooltip_bg"],
-                    foreground=colors["tooltip_fg"],
-                    border=colors["tooltip_border"],
-                )
-            )
+            menu = tk.Menu(button, tearoff=False)
+            for entry_label, command in entries:
+                if command is None:
+                    menu.add_separator()
+                else:
+                    menu.add_command(label=entry_label, command=command)
+            button.configure(menu=menu)
+            button.pack(side="left", padx=(0, 4))
 
-        self._control_window_id = self.canvas.create_window(
-            8,
-            8,
-            anchor="nw",
-            window=control_bar,
+        add_menu_button(
+            "File",
+            (
+                ("Save", self._save_map_control),
+                ("Settings", self._open_settings_dialog_control),
+                ("", None),
+                ("Exit", self._close_app_control),
+            ),
         )
-        self._raise_controls()
+        add_menu_button(
+            "Edit",
+            (
+                ("Clear", self._clear_map_control),
+            ),
+        )
+        add_menu_button(
+            "Help",
+            (
+                ("Color Legend", self._open_color_legend_dialog_control),
+                ("About", self._open_about_dialog_control),
+            ),
+        )
 
-    def _raise_controls(self) -> None:
+        self._menu_frame = menu_frame
+        self._menu_window_id = self.canvas.create_window(
+            0,
+            0,
+            anchor="nw",
+            width=self.width,
+            window=menu_frame,
+        )
         self._raise_overlays()
 
     def _raise_overlays(self) -> None:
@@ -496,8 +478,8 @@ class IsraelMap:
             self.canvas.tag_raise(self._watchdog_icon_id)
         if self._watchdog_text_id is not None:
             self.canvas.tag_raise(self._watchdog_text_id)
-        if self._control_window_id is not None:
-            self.canvas.tag_raise(self._control_window_id)
+        if self._menu_window_id is not None:
+            self.canvas.tag_raise(self._menu_window_id)
 
     def set_log_timestamp(self, timestamp: str) -> None:
         if self._closed or not self.root.winfo_exists():
@@ -532,7 +514,7 @@ class IsraelMap:
             return
 
         # 1. Keep the watchdog in the lower-left corner so it does not increase
-        #    the window height and stays separated from the control buttons.
+        #    the window height and stays separated from the top menu.
         # 2. A pulsing icon makes it obvious when the UI loop itself has stopped
         #    progressing, because the pulse will freeze in place.
         colors = self._WATCHDOG_COLORS.get(level, self._WATCHDOG_COLORS["offline"])
@@ -650,47 +632,47 @@ class IsraelMap:
                 outline=colors["panel_border"],
             )
 
-    def _resolve_control_command(self, action: str | None) -> callable:
-        if action == "clear_map":
-            return self._clear_map_control
-        if action == "save_map_dialog":
-            return self._open_save_dialog_control
-        if action == "close_app":
-            return self._close_app_control
-        return self._noop_control
-
     def _clear_map_control(self) -> None:
         self.reset(refresh=True)
 
-    def _open_save_dialog_control(self) -> None:
-        if self._modal_dialog is not None and self._modal_dialog.winfo_exists():
-            self._modal_dialog.lift()
-            self._modal_dialog.focus_force()
-            return
+    def _save_map_control(self) -> None:
+        # 1. File > Save should act immediately with the current persisted
+        #    settings instead of opening another confirmation panel.
+        # 2. Keeping save direct makes the new File menu behave like a standard
+        #    desktop application.
+        self._save_map_image_to_disk()
 
-        self._load_save_settings()
+    def _open_settings_dialog_control(self) -> None:
+        # 1. Snapshot the current settings so Cancel can truly discard dialog
+        #    edits instead of leaving partial changes behind in memory.
+        # 2. Reuse the existing save-related settings rather than inventing a
+        #    second configuration model for the same output options.
+        self._settings_dialog_snapshot = (
+            self._save_include_datetime_value(),
+            self._save_base_name_value(),
+            self._save_scale_value(),
+            self._focus_on_alert_value(),
+            self._audible_alert_value(),
+        )
+
         colors = self._CONTROL_COLORS
-        dialog = tk.Toplevel(self.root)
-        dialog.title("Save Map Image")
-        dialog.transient(self.root)
-        dialog.resizable(False, False)
-        dialog.configure(bg="#eef0f2")
-        dialog.protocol("WM_DELETE_WINDOW", self._close_modal_dialog)
+        dialog, body = self._open_modal_shell("Settings", kind="settings")
 
-        body = tk.Frame(dialog, bg="#eef0f2", padx=18, pady=16)
-        body.pack(fill="both", expand=True)
-
-        form_panel = tk.Frame(
+        form_panel = tk.LabelFrame(
             body,
+            text="Image Save Options",
             width=260,
             height=150,
             bg="#f7f8f9",
-            highlightthickness=1,
-            highlightbackground="#c8cdd2",
+            fg="#5a6168",
+            bd=1,
+            relief="solid",
             padx=14,
             pady=14,
+            font=("TkDefaultFont", 10, "bold"),
+            labelanchor="nw",
         )
-        form_panel.pack(fill="both", expand=True)
+        form_panel.pack(fill="x")
         form_panel.pack_propagate(False)
 
         base_name_label = tk.Label(
@@ -721,7 +703,7 @@ class IsraelMap:
 
         include_checkbox = tk.Checkbutton(
             form_panel,
-            text="Include Data/Time",
+            text="Include Date/Time",
             variable=self._save_include_datetime_var,
             anchor="w",
             bg="#f7f8f9",
@@ -777,6 +759,59 @@ class IsraelMap:
         )
         scale_suffix.pack(side="left")
 
+        notification_panel = tk.LabelFrame(
+            body,
+            text="Alert Notification",
+            width=260,
+            height=94,
+            bg="#f7f8f9",
+            fg="#5a6168",
+            bd=1,
+            relief="solid",
+            padx=14,
+            pady=12,
+            font=("TkDefaultFont", 10, "bold"),
+            labelanchor="nw",
+        )
+        notification_panel.pack(fill="x", pady=(12, 0))
+        notification_panel.pack_propagate(False)
+
+        focus_checkbox = tk.Checkbutton(
+            notification_panel,
+            text="Bring Window to Front",
+            variable=self._focus_on_alert_var,
+            anchor="w",
+            bg="#f7f8f9",
+            fg=colors["button_fg"],
+            activebackground="#f7f8f9",
+            activeforeground=colors["button_active_fg"],
+            selectcolor="#f1f3f5",
+            highlightthickness=0,
+            bd=0,
+            padx=0,
+            pady=0,
+            font=("TkDefaultFont", 10),
+        )
+        focus_checkbox.pack(fill="x")
+
+        audible_checkbox = tk.Checkbutton(
+            notification_panel,
+            text="Play Audible Alert",
+            variable=self._audible_alert_var,
+            anchor="w",
+            bg="#f7f8f9",
+            fg=colors["button_fg"],
+            activebackground="#f7f8f9",
+            activeforeground=colors["button_active_fg"],
+            selectcolor="#f1f3f5",
+            highlightthickness=0,
+            bd=0,
+            padx=0,
+            pady=0,
+            font=("TkDefaultFont", 10),
+        )
+        audible_checkbox.pack(fill="x", pady=(10, 0))
+
         button_row = tk.Frame(body, bg="#eef0f2")
         button_row.pack(fill="x", pady=(14, 0))
 
@@ -799,8 +834,8 @@ class IsraelMap:
 
         ok_button = tk.Button(
             button_row,
-            text="Ok",
-            command=self._handle_save_dialog_ok,
+            text="OK",
+            command=self._handle_settings_dialog_ok,
             width=9,
             bd=0,
             relief="flat",
@@ -814,6 +849,179 @@ class IsraelMap:
         )
         ok_button.pack(side="right", padx=(0, 8))
 
+        self._finalize_modal_dialog(dialog, focus_widget=base_name_entry)
+
+    def _open_color_legend_dialog_control(self) -> None:
+        # 1. Keep the legend as a real window so operators can reopen it on
+        #    demand without leaving the main map view.
+        # 2. Describe only the alert colors used by the runtime, not every color
+        #    the generic drawing API happens to support.
+        dialog, body = self._open_modal_shell("Color Legend", kind="legend")
+
+        title = tk.Label(
+            body,
+            text="Color Legend",
+            anchor="w",
+            bg="#eef0f2",
+            fg="#2f3841",
+            font=("TkDefaultFont", 12, "bold"),
+        )
+        title.pack(fill="x")
+
+        subtitle = tk.Label(
+            body,
+            text="These are the alert marker colors currently used on the map.",
+            anchor="w",
+            justify="left",
+            wraplength=360,
+            bg="#eef0f2",
+            fg="#5a6168",
+            pady=2,
+            font=("TkDefaultFont", 10),
+        )
+        subtitle.pack(fill="x", pady=(4, 12))
+
+        card = tk.Frame(
+            body,
+            bg="#f7f8f9",
+            highlightthickness=1,
+            highlightbackground="#c8cdd2",
+            padx=14,
+            pady=12,
+        )
+        card.pack(fill="both", expand=True)
+
+        for index, (color_name, label, description) in enumerate(self._LEGEND_ITEMS):
+            self._add_legend_row(card, color_name=color_name, label=label, description=description)
+            if index < len(self._LEGEND_ITEMS) - 1:
+                divider = tk.Frame(card, bg="#d7dce0", height=1)
+                divider.pack(fill="x", pady=8)
+
+        note = tk.Label(
+            body,
+            text="A newer alert replaces the older marker at the same locality. Event Ended markers clear after 10 minutes.",
+            anchor="w",
+            justify="left",
+            wraplength=360,
+            bg="#eef0f2",
+            fg="#5a6168",
+            pady=0,
+            font=("TkDefaultFont", 9),
+        )
+        note.pack(fill="x", pady=(12, 0))
+
+        button_row = tk.Frame(body, bg="#eef0f2")
+        button_row.pack(fill="x", pady=(14, 0))
+
+        close_button = tk.Button(
+            button_row,
+            text="Close",
+            command=self._close_modal_dialog,
+            width=9,
+            bd=0,
+            relief="flat",
+            font=("TkDefaultFont", 10, "bold"),
+            bg="#d6dade",
+            fg="#394047",
+            activebackground="#e0e4e7",
+            activeforeground="#20262c",
+            highlightthickness=0,
+            takefocus=False,
+        )
+        close_button.pack(side="right")
+
+        self._finalize_modal_dialog(dialog, focus_widget=close_button)
+
+    def _open_about_dialog_control(self) -> None:
+        # 1. Keep the About text explicit about authorship so both the project
+        #    owner and the coding assistant are credited in the UI itself.
+        # 2. Use plain factual wording because this is an operational tool, not
+        #    a marketing splash screen.
+        dialog, body = self._open_modal_shell("About", kind="about")
+
+        title = tk.Label(
+            body,
+            text="PIKUD-HAOREF Local Alert Display",
+            anchor="w",
+            bg="#eef0f2",
+            fg="#2f3841",
+            font=("TkDefaultFont", 12, "bold"),
+        )
+        title.pack(fill="x")
+
+        about_lines = (
+            "Local map viewer for Home Front Command alerts and recent alert history.",
+            "Project concept, requirements, and operational direction by the project owner.",
+            "Implementation assistance by Codex, based on GPT-5, from OpenAI.",
+            "License: MIT.",
+        )
+        for line in about_lines:
+            label = tk.Label(
+                body,
+                text=line,
+                anchor="w",
+                justify="left",
+                wraplength=360,
+                bg="#eef0f2",
+                fg="#4b545c",
+                pady=0,
+                font=("TkDefaultFont", 10),
+            )
+            label.pack(fill="x", pady=(8 if line == about_lines[0] else 6, 0))
+
+        button_row = tk.Frame(body, bg="#eef0f2")
+        button_row.pack(fill="x", pady=(16, 0))
+
+        close_button = tk.Button(
+            button_row,
+            text="Close",
+            command=self._close_modal_dialog,
+            width=9,
+            bd=0,
+            relief="flat",
+            font=("TkDefaultFont", 10, "bold"),
+            bg="#d6dade",
+            fg="#394047",
+            activebackground="#e0e4e7",
+            activeforeground="#20262c",
+            highlightthickness=0,
+            takefocus=False,
+        )
+        close_button.pack(side="right")
+
+        self._finalize_modal_dialog(dialog, focus_widget=close_button)
+
+    def _open_modal_shell(self, title: str, *, kind: str) -> tuple[tk.Toplevel, tk.Frame]:
+        # 1. Keep only one modal dialog active at a time so keyboard focus and
+        #    grab ownership remain predictable.
+        # 2. Store the modal kind because Settings needs special Cancel behavior.
+        if self._modal_dialog is not None and self._modal_dialog.winfo_exists():
+            self._close_modal_dialog()
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title(title)
+        dialog.transient(self.root)
+        dialog.resizable(False, False)
+        dialog.configure(bg="#eef0f2")
+        dialog.protocol("WM_DELETE_WINDOW", self._close_modal_dialog)
+
+        body = tk.Frame(dialog, bg="#eef0f2", padx=18, pady=16)
+        body.pack(fill="both", expand=True)
+
+        self._modal_dialog = dialog
+        self._modal_kind = kind
+        return dialog, body
+
+    def _finalize_modal_dialog(
+        self,
+        dialog: tk.Toplevel,
+        *,
+        focus_widget: tk.Widget | None = None,
+    ) -> None:
+        # 1. Center every dialog over the map window so secondary screens feel
+        #    attached to the main tool instead of randomly placed.
+        # 2. Grab input after layout is stable so the dialog behaves modally on
+        #    all supported desktop environments.
         dialog.update_idletasks()
         root_x = self.root.winfo_rootx()
         root_y = self.root.winfo_rooty()
@@ -824,17 +1032,78 @@ class IsraelMap:
         x = root_x + max(0, (root_width - dialog_width) // 2)
         y = root_y + max(0, (root_height - dialog_height) // 2)
         dialog.geometry(f"+{x}+{y}")
-
-        self._modal_dialog = dialog
         dialog.grab_set()
-        base_name_entry.focus_force()
-        base_name_entry.icursor("end")
+        dialog.lift()
+        if focus_widget is not None and focus_widget.winfo_exists():
+            focus_widget.focus_force()
+            if hasattr(focus_widget, "icursor"):
+                try:
+                    focus_widget.icursor("end")
+                except tk.TclError:
+                    pass
+
+    def _add_legend_row(self, parent: tk.Widget, *, color_name: str, label: str, description: str) -> None:
+        # 1. Use the same drawn-circle visual language as the map itself so the
+        #    legend is immediately recognizable.
+        # 2. Keep the text split into a short label and a sentence because the
+        #    operator may scan this quickly during an event.
+        row = tk.Frame(parent, bg="#f7f8f9")
+        row.pack(fill="x")
+
+        swatch = tk.Canvas(
+            row,
+            width=26,
+            height=26,
+            bg="#f7f8f9",
+            highlightthickness=0,
+            bd=0,
+        )
+        swatch.pack(side="left", padx=(0, 12))
+        color = self._resolve_draw_color(color_name)
+        swatch.create_oval(5, 5, 21, 21, fill=color, outline=color)
+
+        text_column = tk.Frame(row, bg="#f7f8f9")
+        text_column.pack(side="left", fill="x", expand=True)
+
+        title = tk.Label(
+            text_column,
+            text=label,
+            anchor="w",
+            bg="#f7f8f9",
+            fg="#2f3841",
+            font=("TkDefaultFont", 10, "bold"),
+        )
+        title.pack(fill="x")
+
+        detail = tk.Label(
+            text_column,
+            text=description,
+            anchor="w",
+            justify="left",
+            wraplength=300,
+            bg="#f7f8f9",
+            fg="#5a6168",
+            font=("TkDefaultFont", 9),
+        )
+        detail.pack(fill="x", pady=(2, 0))
 
     def _close_modal_dialog(self) -> None:
         if self._modal_dialog is None:
             return
         dialog = self._modal_dialog
         self._modal_dialog = None
+        modal_kind = self._modal_kind
+        self._modal_kind = None
+        if modal_kind == "settings" and self._settings_dialog_snapshot is not None:
+            include_datetime, base_name, scale, focus_on_alert, audible_alert = self._settings_dialog_snapshot
+            self._apply_save_settings(
+                include_datetime=include_datetime,
+                base_name=base_name,
+                scale=scale,
+                focus_on_alert=focus_on_alert,
+                audible_alert=audible_alert,
+            )
+        self._settings_dialog_snapshot = None
         if dialog.winfo_exists():
             dialog.grab_release()
             dialog.destroy()
@@ -842,9 +1111,18 @@ class IsraelMap:
     def _close_app_control(self) -> None:
         self.close()
 
-    def _handle_save_dialog_ok(self) -> None:
+    def _handle_settings_dialog_ok(self) -> None:
+        # 1. Validate the editable settings before writing them to disk so a bad
+        #    scale or empty base name does not become the new default.
+        # 2. Clear the snapshot before closing so OK commits instead of restoring
+        #    the previous values like Cancel does.
+        try:
+            self._validate_save_settings()
+        except Exception as exc:
+            self._log_failure("Could not save settings", exc)
+            return
+        self._settings_dialog_snapshot = None
         self._save_settings_to_disk()
-        self._save_map_image_to_disk()
         self._close_modal_dialog()
 
     def _load_save_settings(self) -> None:
@@ -852,6 +1130,8 @@ class IsraelMap:
             include_datetime=self._DEFAULT_SAVE_INCLUDE_DATETIME,
             base_name=self._DEFAULT_SAVE_BASE_NAME,
             scale=self._DEFAULT_SAVE_SCALE,
+            focus_on_alert=self._DEFAULT_FOCUS_ON_ALERT,
+            audible_alert=self._DEFAULT_AUDIBLE_ALERT,
         )
 
         path = Path.cwd() / self._SETTINGS_FILENAME
@@ -868,6 +1148,8 @@ class IsraelMap:
             include_datetime=loaded.get("include_datetime", self._DEFAULT_SAVE_INCLUDE_DATETIME),
             base_name=loaded.get("base_name", self._DEFAULT_SAVE_BASE_NAME),
             scale=loaded.get("scale_percent", self._DEFAULT_SAVE_SCALE),
+            focus_on_alert=loaded.get("focus_on_alert", self._DEFAULT_FOCUS_ON_ALERT),
+            audible_alert=loaded.get("audible_alert", self._DEFAULT_AUDIBLE_ALERT),
         )
 
     def _save_settings_to_disk(self) -> None:
@@ -938,12 +1220,25 @@ class IsraelMap:
             raise ValueError("Scale must be greater than zero")
         return scale_percent
 
+    def _validate_save_settings(self) -> None:
+        # 1. Use the same validation rules for Settings and Save so the stored
+        #    preferences cannot drift away from what the save path accepts.
+        # 2. Validate both the filename base and the numeric scale because those
+        #    are the two fields that can make saving fail later.
+        if not self._save_base_name_value().strip():
+            raise ValueError("Base Name is empty")
+        self._parse_scale_percent(self._save_scale_value())
+
     def _build_settings_text(self) -> str:
         include_datetime = "true" if self._save_include_datetime_value() else "false"
+        focus_on_alert = "true" if self._focus_on_alert_value() else "false"
+        audible_alert = "true" if self._audible_alert_value() else "false"
         base_name = json.dumps(self._save_base_name_value(), ensure_ascii=False)
         scale_percent = json.dumps(self._save_scale_value())
         return (
             f"include_datetime: {include_datetime}\n"
+            f"focus_on_alert: {focus_on_alert}\n"
+            f"audible_alert: {audible_alert}\n"
             f"base_name: {base_name}\n"
             f"scale_percent: {scale_percent}\n"
         )
@@ -960,7 +1255,7 @@ class IsraelMap:
 
             normalized_key = key.strip()
             raw_value = value.strip()
-            if normalized_key == "include_datetime":
+            if normalized_key in {"include_datetime", "focus_on_alert", "audible_alert"}:
                 settings[normalized_key] = raw_value.casefold() in {"true", "yes", "on", "1"}
             elif normalized_key in {"base_name", "scale_percent"}:
                 settings[normalized_key] = self._parse_settings_string(raw_value)
@@ -973,13 +1268,25 @@ class IsraelMap:
             return str(json.loads(raw_value)) if raw_value[:1] == '"' else str(ast.literal_eval(raw_value))
         return raw_value
 
-    def _apply_save_settings(self, *, include_datetime: bool, base_name: str, scale: str) -> None:
+    def _apply_save_settings(
+        self,
+        *,
+        include_datetime: bool,
+        base_name: str,
+        scale: str,
+        focus_on_alert: bool,
+        audible_alert: bool,
+    ) -> None:
         if self._save_include_datetime_var is not None:
             self._save_include_datetime_var.set(bool(include_datetime))
         if self._save_base_name_var is not None:
             self._save_base_name_var.set(base_name)
         if self._save_scale_var is not None:
             self._save_scale_var.set(scale)
+        if self._focus_on_alert_var is not None:
+            self._focus_on_alert_var.set(bool(focus_on_alert))
+        if self._audible_alert_var is not None:
+            self._audible_alert_var.set(bool(audible_alert))
 
     def _save_include_datetime_value(self) -> bool:
         return bool(self._save_include_datetime_var.get()) if self._save_include_datetime_var is not None else False
@@ -990,6 +1297,12 @@ class IsraelMap:
     def _save_scale_value(self) -> str:
         return self._save_scale_var.get() if self._save_scale_var is not None else self._DEFAULT_SAVE_SCALE
 
+    def _focus_on_alert_value(self) -> bool:
+        return bool(self._focus_on_alert_var.get()) if self._focus_on_alert_var is not None else self._DEFAULT_FOCUS_ON_ALERT
+
+    def _audible_alert_value(self) -> bool:
+        return bool(self._audible_alert_var.get()) if self._audible_alert_var is not None else self._DEFAULT_AUDIBLE_ALERT
+
     def _log_failure(self, message: str, exc: Exception) -> None:
         try:
             from utils import log
@@ -997,9 +1310,6 @@ class IsraelMap:
             log(f"{message}: {exc}")
         except Exception:
             pass
-
-    def _noop_control(self) -> None:
-        return None
 
     def _resolve_draw_color(self, color: str) -> str:
         if color == "background":
