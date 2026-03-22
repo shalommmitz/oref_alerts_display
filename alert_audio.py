@@ -5,11 +5,13 @@ from __future__ import annotations
 import os
 from pathlib import Path
 from queue import Empty, Queue
-from threading import Lock, Thread
+from threading import Event, Lock, Thread
 from typing import Callable
 
 
 class AudioAlertPlayer:
+    _INITIALIZATION_WAIT_SECONDS = 0.5
+
     def __init__(self, sound_path: Path, *, log_fn: Callable[[str], None] | None = None) -> None:
         # 1. Keep the configuration tiny: one fixed sound file and one optional
         #    logger are all this app currently needs for audible alerts.
@@ -20,19 +22,32 @@ class AudioAlertPlayer:
         self._commands: Queue[str | None] = Queue()
         self._thread: Thread | None = None
         self._lock = Lock()
+        self._ready = Event()
+        self._available = False
         self._start_failed = False
 
-    def play(self) -> None:
+    def warm_up(self) -> bool:
+        # 1. Prime the backend ahead of the first real alert so the operator
+        #    does not lose the first sound to lazy initialization delays.
+        # 2. Return the current availability so callers can decide whether they
+        #    need a fallback notification path.
+        if self._start_failed:
+            return False
+        self._ensure_started(wait=True)
+        return self._available
+
+    def play(self) -> bool:
         # 1. Keep the UI thread non-blocking by enqueueing the request and
-        #    letting the worker own all audio-library interaction.
-        # 2. If startup already failed, silently ignore later play requests
-        #    because the failure was already logged once.
+        #    letting the worker own all audio-library interaction after startup.
+        # 2. Return whether an mp3 play request was actually accepted so the
+        #    caller can fall back to a simpler notification if needed.
         if self._start_failed:
-            return
-        self._ensure_started()
-        if self._start_failed:
-            return
+            return False
+        self._ensure_started(wait=True)
+        if self._start_failed or not self._available:
+            return False
         self._commands.put("play")
+        return True
 
     def close(self) -> None:
         # 1. Let shutdown stay best-effort because the app should still exit
@@ -44,15 +59,21 @@ class AudioAlertPlayer:
         self._commands.put(None)
         thread.join(timeout=1.0)
 
-    def _ensure_started(self) -> None:
+    def _ensure_started(self, *, wait: bool) -> None:
         if self._thread is not None or self._start_failed:
+            if wait and self._thread is not None:
+                self._ready.wait(timeout=self._INITIALIZATION_WAIT_SECONDS)
             return
         with self._lock:
             if self._thread is not None or self._start_failed:
+                if wait and self._thread is not None:
+                    self._ready.wait(timeout=self._INITIALIZATION_WAIT_SECONDS)
                 return
             worker = Thread(target=self._worker, name="alert-audio", daemon=True)
             self._thread = worker
             worker.start()
+        if wait:
+            self._ready.wait(timeout=self._INITIALIZATION_WAIT_SECONDS)
 
     def _worker(self) -> None:
         # 1. Hide pygame's startup banner so it does not pollute the operator's
@@ -76,6 +97,8 @@ class AudioAlertPlayer:
             except Exception:
                 pass
             return
+        self._available = True
+        self._ready.set()
 
         try:
             while True:
@@ -112,6 +135,7 @@ class AudioAlertPlayer:
 
     def _mark_failed(self, message: str) -> None:
         self._start_failed = True
+        self._ready.set()
         self._log_once(message)
 
     def _log_once(self, message: str) -> None:

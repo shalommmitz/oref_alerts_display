@@ -14,6 +14,11 @@ from typing import Callable
 
 from PIL import Image, ImageDraw
 
+try:
+    from bidi.algorithm import get_display as _get_bidi_display
+except Exception:
+    _get_bidi_display = None
+
 
 @dataclass(frozen=True)
 class _MapBounds:
@@ -30,6 +35,15 @@ class _DrawCommand:
     color: str
     shape: str
     size: int
+
+
+@dataclass(frozen=True)
+class _LocalityPoint:
+    name: str
+    latitude: float
+    longitude: float
+    x: float
+    y: float
 
 
 class IsraelMap:
@@ -129,6 +143,8 @@ class IsraelMap:
         self._menu_window_id: int | None = None
         self._modal_dialog: tk.Toplevel | None = None
         self._modal_kind: str | None = None
+        self._nearest_locality_text: str | None = None
+        self._locality_points: list[_LocalityPoint] | None = None
         self._settings_dialog_snapshot: tuple[bool, str, str, bool, bool] | None = None
         self._log_time_background_id: int | None = None
         self._log_time_text_id: int | None = None
@@ -181,6 +197,7 @@ class IsraelMap:
         self.canvas.create_image(0, 0, anchor="nw", image=self._background_photo)
         if show_controls:
             self._create_menu_bar()
+            self._enable_canvas_lookup()
         if self.auto_refresh:
             self.process_events()
 
@@ -330,6 +347,14 @@ class IsraelMap:
     def audible_alert_enabled(self) -> bool:
         return self._audible_alert_value()
 
+    def ring_bell(self) -> None:
+        if self._closed or not self.root.winfo_exists():
+            return
+        try:
+            self.root.bell()
+        except tk.TclError:
+            pass
+
     def _finalize_close(self) -> None:
         if not self.root.winfo_exists():
             return
@@ -452,6 +477,7 @@ class IsraelMap:
         add_menu_button(
             "Help",
             (
+                ("Usage", self._open_usage_dialog_control),
                 ("Color Legend", self._open_color_legend_dialog_control),
                 ("About", self._open_about_dialog_control),
             ),
@@ -466,6 +492,253 @@ class IsraelMap:
             window=menu_frame,
         )
         self._raise_overlays()
+
+    def _enable_canvas_lookup(self) -> None:
+        # 1. Bind settlement lookup only for the interactive operator-facing
+        #    map mode so reusable non-interactive scripts keep their old behavior.
+        # 2. Use `add="+"` so this feature does not replace any future canvas
+        #    bindings that other map features may install.
+        self.canvas.bind("<Button-1>", self._handle_canvas_lookup_click, add="+")
+
+    def _handle_canvas_lookup_click(self, event: tk.Event) -> None:
+        # 1. Ignore clicks outside the drawable image area because the request
+        #    is specifically about points inside the map image.
+        # 2. Keep the nearest-settlement query in canvas coordinates so it uses
+        #    exactly the same projection the operator sees on screen.
+        if self._closed or not self.root.winfo_exists():
+            return
+        if not (0 <= event.x <= self.width and 0 <= event.y <= self.height):
+            return
+
+        nearest = self._find_nearest_locality(event.x, event.y)
+        if nearest is None:
+            return
+        self._open_nearest_locality_dialog(nearest)
+
+    def _find_nearest_locality(self, x: float, y: float) -> _LocalityPoint | None:
+        # 1. Build the projected locality cache lazily so startup stays light
+        #    for callers that never use the click-to-lookup feature.
+        # 2. Compare squared distance because it gives the same nearest result
+        #    without paying for repeated square-root calls.
+        locality_points = self._ensure_locality_points()
+        if not locality_points:
+            return None
+
+        return min(
+            locality_points,
+            key=lambda point: ((point.x - x) ** 2) + ((point.y - y) ** 2),
+        )
+
+    def _ensure_locality_points(self) -> list[_LocalityPoint]:
+        if self._locality_points is not None:
+            return self._locality_points
+
+        # 1. Import here to avoid a module-level circular dependency, because
+        #    `utils.py` also imports `IsraelMap` for its sleep helper typing.
+        # 2. Cache the projected coordinates once because the locality dataset is
+        #    static during runtime and does not need to be recomputed per click.
+        from utils import get_coords
+
+        locality_points: list[_LocalityPoint] = []
+        for name, point in get_coords().items():
+            latitude = float(point["latitude"])
+            longitude = float(point["longitude"])
+            x, y = self._latlon_to_xy(latitude, longitude)
+            locality_points.append(
+                _LocalityPoint(
+                    name=name,
+                    latitude=latitude,
+                    longitude=longitude,
+                    x=x,
+                    y=y,
+                )
+            )
+        self._locality_points = locality_points
+        return locality_points
+
+    def _open_nearest_locality_dialog(self, locality: _LocalityPoint) -> None:
+        # 1. Keep the copied text identical to the displayed text so the operator
+        #    can trust that "Copy and Close" exports exactly what was shown.
+        # 2. Use a modal dialog because the user explicitly asked for that flow
+        #    instead of an inline status overlay or tooltip.
+        self._nearest_locality_text = (
+            f"Settlement: {locality.name}\n"
+            f"Latitude: {locality.latitude:.6f}\n"
+            f"Longitude: {locality.longitude:.6f}"
+        )
+        dialog, body = self._open_modal_shell("Nearest Settlement", kind="nearest_locality")
+
+        title = tk.Label(
+            body,
+            text="Nearest Settlement",
+            anchor="w",
+            bg="#eef0f2",
+            fg="#2f3841",
+            font=("TkDefaultFont", 12, "bold"),
+        )
+        title.pack(fill="x")
+
+        card = tk.Frame(
+            body,
+            bg="#f7f8f9",
+            highlightthickness=1,
+            highlightbackground="#c8cdd2",
+            padx=14,
+            pady=12,
+        )
+        card.pack(fill="both", expand=True, pady=(12, 0))
+
+        name_label = tk.Label(
+            card,
+            text="Settlement",
+            anchor="w",
+            bg="#f7f8f9",
+            fg="#5a6168",
+            font=("TkDefaultFont", 10, "bold"),
+        )
+        name_label.pack(fill="x")
+
+        # 1. Tk text-entry widgets do not reliably render logical Hebrew text in
+        #    the correct visual order, so prepare an explicit visual display
+        #    string for the field.
+        # 2. Keep the original logical Hebrew text separately so copy actions
+        #    still place the correct locality name on the clipboard.
+        display_name = self._to_visual_rtl_text(locality.name)
+        name_value_var = tk.StringVar(value=display_name)
+        name_value = tk.Entry(
+            card,
+            textvariable=name_value_var,
+            justify="right",
+            state="readonly",
+            readonlybackground="#ffffff",
+            bd=0,
+            relief="flat",
+            highlightthickness=1,
+            highlightbackground="#c8cdd2",
+            highlightcolor="#c8cdd2",
+            fg="#20262c",
+            font=("TkDefaultFont", 13, "bold"),
+        )
+        name_value.pack(fill="x", pady=(4, 12), ipady=6)
+        name_value.bind(
+            "<Button-1>",
+            lambda _event: self._select_all_entry_text(name_value),
+            add="+",
+        )
+        name_value.bind(
+            "<FocusIn>",
+            lambda _event: self._select_all_entry_text(name_value),
+            add="+",
+        )
+        name_value.bind(
+            "<Control-c>",
+            lambda _event: self._copy_text_to_clipboard(locality.name),
+            add="+",
+        )
+        name_value.bind(
+            "<Command-c>",
+            lambda _event: self._copy_text_to_clipboard(locality.name),
+            add="+",
+        )
+        name_value.bind(
+            "<<Copy>>",
+            lambda _event: self._copy_text_to_clipboard(locality.name),
+            add="+",
+        )
+
+        coords_text = (
+            f"Latitude: {locality.latitude:.6f}\n"
+            f"Longitude: {locality.longitude:.6f}"
+        )
+        details = tk.Label(
+            card,
+            text=coords_text,
+            anchor="w",
+            justify="left",
+            bg="#f7f8f9",
+            fg="#394047",
+            font=("TkDefaultFont", 11),
+        )
+        details.pack(fill="x")
+
+        button_row = tk.Frame(body, bg="#eef0f2")
+        button_row.pack(fill="x", pady=(14, 0))
+
+        close_button = tk.Button(
+            button_row,
+            text="Close",
+            command=self._close_modal_dialog,
+            width=11,
+            bd=0,
+            relief="flat",
+            font=("TkDefaultFont", 10, "bold"),
+            bg="#d6dade",
+            fg="#394047",
+            activebackground="#e0e4e7",
+            activeforeground="#20262c",
+            highlightthickness=0,
+            takefocus=False,
+        )
+        close_button.pack(side="right")
+
+        copy_button = tk.Button(
+            button_row,
+            text="Copy and Close",
+            command=self._copy_nearest_locality_and_close,
+            width=14,
+            bd=0,
+            relief="flat",
+            font=("TkDefaultFont", 10, "bold"),
+            bg=self._CONTROL_COLORS["button_bg"],
+            fg=self._CONTROL_COLORS["button_fg"],
+            activebackground=self._CONTROL_COLORS["button_active_bg"],
+            activeforeground=self._CONTROL_COLORS["button_active_fg"],
+            highlightthickness=0,
+            takefocus=False,
+        )
+        copy_button.pack(side="right", padx=(0, 8))
+
+        self._finalize_modal_dialog(dialog, focus_widget=copy_button)
+
+    def _copy_nearest_locality_and_close(self) -> None:
+        if self._nearest_locality_text is None:
+            self._close_modal_dialog()
+            return
+        self._copy_text_to_clipboard(self._nearest_locality_text)
+        self._close_modal_dialog()
+
+    def _copy_text_to_clipboard(self, text: str) -> str:
+        # 1. Keep clipboard writes centralized so the nearest-settlement dialog
+        #    can reuse the same reliable path for both full details and name-only copy.
+        # 2. Return `"break"` so Tk stops its default copy handling when this is
+        #    called from a key binding on the locality name field.
+        try:
+            self.root.clipboard_clear()
+            self.root.clipboard_append(text)
+            self.root.update_idletasks()
+        except tk.TclError:
+            pass
+        return "break"
+
+    def _select_all_entry_text(self, entry: tk.Entry) -> str:
+        try:
+            entry.selection_range(0, "end")
+            entry.icursor("end")
+        except tk.TclError:
+            pass
+        return "break"
+
+    def _to_visual_rtl_text(self, text: str) -> str:
+        # 1. Prefer python-bidi when available because it handles mixed Hebrew,
+        #    punctuation, and quoted names more accurately than plain reversal.
+        # 2. Fall back to a simple reversal so the dialog still improves visibly
+        #    even before the dependency is installed in a new environment.
+        if _get_bidi_display is not None:
+            try:
+                return _get_bidi_display(text)
+            except Exception:
+                pass
+        return text[::-1]
 
     def _raise_overlays(self) -> None:
         if self._log_time_background_id is not None:
@@ -662,7 +935,7 @@ class IsraelMap:
             body,
             text="Image Save Options",
             width=260,
-            height=150,
+            height=176,
             bg="#f7f8f9",
             fg="#5a6168",
             bd=1,
@@ -932,6 +1205,63 @@ class IsraelMap:
 
         self._finalize_modal_dialog(dialog, focus_widget=close_button)
 
+    def _open_usage_dialog_control(self) -> None:
+        # 1. Keep usage guidance in the same modal style as the other Help
+        #    screens so the operator gets one consistent interaction pattern.
+        # 2. Document the interactive click feature explicitly because it is not
+        #    otherwise visible from the menu labels alone.
+        dialog, body = self._open_modal_shell("Usage", kind="usage")
+
+        title = tk.Label(
+            body,
+            text="Usage",
+            anchor="w",
+            bg="#eef0f2",
+            fg="#2f3841",
+            font=("TkDefaultFont", 12, "bold"),
+        )
+        title.pack(fill="x")
+
+        usage_lines = (
+            "Click inside the map to open the nearest settlement name and coordinates.",
+            "Use Copy and Close in that window if you want the settlement details on the clipboard.",
+        )
+        for line in usage_lines:
+            label = tk.Label(
+                body,
+                text=line,
+                anchor="w",
+                justify="left",
+                wraplength=360,
+                bg="#eef0f2",
+                fg="#4b545c",
+                pady=0,
+                font=("TkDefaultFont", 10),
+            )
+            label.pack(fill="x", pady=(10, 0))
+
+        button_row = tk.Frame(body, bg="#eef0f2")
+        button_row.pack(fill="x", pady=(16, 0))
+
+        close_button = tk.Button(
+            button_row,
+            text="Close",
+            command=self._close_modal_dialog,
+            width=9,
+            bd=0,
+            relief="flat",
+            font=("TkDefaultFont", 10, "bold"),
+            bg="#d6dade",
+            fg="#394047",
+            activebackground="#e0e4e7",
+            activeforeground="#20262c",
+            highlightthickness=0,
+            takefocus=False,
+        )
+        close_button.pack(side="right")
+
+        self._finalize_modal_dialog(dialog, focus_widget=close_button)
+
     def _open_about_dialog_control(self) -> None:
         # 1. Keep the About text explicit about authorship so both the project
         #    owner and the coding assistant are credited in the UI itself.
@@ -951,7 +1281,7 @@ class IsraelMap:
 
         about_lines = (
             "Local map viewer for Home Front Command alerts and recent alert history.",
-            "Project concept, requirements, and operational direction by the project owner.",
+            "Project concept, requirements, and operational direction by Shalom Mitz.",
             "Implementation assistance by Codex, based on GPT-5, from OpenAI.",
             "License: MIT.",
         )
@@ -1094,6 +1424,7 @@ class IsraelMap:
         self._modal_dialog = None
         modal_kind = self._modal_kind
         self._modal_kind = None
+        self._nearest_locality_text = None
         if modal_kind == "settings" and self._settings_dialog_snapshot is not None:
             include_datetime, base_name, scale, focus_on_alert, audible_alert = self._settings_dialog_snapshot
             self._apply_save_settings(

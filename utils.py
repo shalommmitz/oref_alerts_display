@@ -25,6 +25,15 @@ def show_status(msg):
     _emit_runtime_line(msg, persist=False)
 
 
+def finish_runtime_line() -> None:
+    # 1. End the carriage-return status line with a real newline so the shell
+    #    prompt does not continue on the same row after the program exits.
+    # 2. Keep this in one helper so every runtime entry point can use the same
+    #    terminal cleanup behavior on shutdown.
+    sys.stdout.write("\n")
+    sys.stdout.flush()
+
+
 def _emit_runtime_line(msg, *, persist: bool):
     now = datetime.now()
     if _LOG_TIME_SINK is not None:

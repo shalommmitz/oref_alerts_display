@@ -2,3 +2,4 @@ requests
 PyYAML
 Pillow
 pygame
+python-bidi

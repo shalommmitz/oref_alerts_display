@@ -129,6 +129,8 @@ def main() -> None:
     coords = utils.get_coords()
     map_view = IsraelMap(auto_refresh=False, show_controls=True)
     audio_player = AudioAlertPlayer(ALERT_SOUND_PATH, log_fn=log)
+    if map_view.audible_alert_enabled():
+        audio_player.warm_up()
     utils.set_log_time_sink(map_view.set_log_timestamp)
 
     # 1. Keep the runtime state close to the top-level loop so the main control
@@ -292,7 +294,8 @@ def main() -> None:
                 if focus_enabled and cooldown_elapsed:
                     map_view.present_window()
                 if audio_enabled and cooldown_elapsed:
-                    audio_player.play()
+                    if not audio_player.play():
+                        map_view.ring_bell()
                 if notifications_enabled and cooldown_elapsed:
                     last_operator_notification_at = now_monotonic
 
@@ -306,6 +309,7 @@ def main() -> None:
         audio_player.close()
         map_view.close()
         utils.set_log_time_sink(None)
+        utils.finish_runtime_line()
 
 
 if __name__ == "__main__":

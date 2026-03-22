@@ -44,6 +44,7 @@ The goal of this project is fast local response and reduced dependence on third-
 - `PyYAML`
 - `Pillow`
 - `pygame`
+- `python-bidi`
 - `tkinter`
 
 Example install in a normal Python environment:
@@ -56,7 +57,7 @@ Notes:
 
 - `tkinter` is usually installed through the OS package manager, not `pip`.
 - The map window needs a graphical display. In a headless container or server, you need an X server or equivalent display backend.
-- Audible alerts use `pygame` to play `ocean_4s.mp3`. If the machine has no working audio backend, the app logs the problem and continues without crashing.
+- Audible alerts use `pygame` to play `ocean_4s.mp3`. If mp3 playback is unavailable, the app logs the problem and falls back to the window-system bell instead of staying silent.
 
 ## Quick Start With `create_venv`
 
@@ -101,6 +102,8 @@ What happens:
 - If `Bring Window to Front` is enabled, non-startup alerts raise the map window above other windows.
 - If `Play Audible Alert` is enabled, non-startup alerts play `ocean_4s.mp3`.
 - Focus-jump and audible-alert notifications share a 10-second cooldown, so alert bursts do not repeatedly steal focus or replay sound.
+- Clicking inside the map image opens a modal showing the nearest settlement name and coordinates, with `Close` and `Copy and Close` actions.
+- The settlement-name field is selectable for name-only copy, and uses `python-bidi` for stronger Hebrew RTL rendering when available.
 - A compact lower-left watchdog shows a pulsing alive icon and `Online` or `Offline`.
 
 Current alert color mapping:
@@ -209,6 +212,7 @@ The runtime code expects that generated file to exist in the project directory.
 - All shapes share the same coordinate transform.
 - When `show_controls=True`, `IsraelMap` creates an in-canvas menu strip that overlays the top of the image instead of increasing the window height.
 - The Settings dialog includes `Image Save Options` and `Alert Notification`, and persists both sections to `settings.yaml`.
+- In interactive mode, clicking the image resolves the nearest locality from `locality_latitude_longitude.yaml` using the current map projection.
 - Startup history replay does not trigger focus-jump or audio notifications, but live alerts and recovery replay alerts do.
 - Operator notifications use one shared 10-second cooldown across focus-jump and audio playback.
 - `IsraelMap.remove_marker()` removes a specific marker without affecting later markers drawn at the same locality.

@@ -188,6 +188,7 @@ Key behaviors:
 - renders a compact lower-left watchdog overlay without increasing window height
 - supports both blocking and non-blocking usage
 - persists both image-save and alert-notification settings in `settings.yaml`
+- resolves nearest-settlement lookups from clicks in interactive mode
 
 Public methods:
 
@@ -247,6 +248,12 @@ Current menu structure when `show_controls=True`:
 - `Edit` -> `Clear`
 - `Help` -> `Color Legend`, `About`
 
+Current interactive click behavior:
+
+- clicking inside the image opens a modal with the nearest settlement name and coordinates
+- the modal provides `Close` and `Copy and Close`
+- the settlement-name field is selectable for name-only copy and prefers `python-bidi` for Hebrew RTL display
+
 Current Settings dialog sections:
 
 - `Image Save Options`
@@ -266,6 +273,7 @@ Current alert-notification behavior:
 - `audible_alert` plays `ocean_4s.mp3` for non-startup alerts
 - startup history replay does not trigger either notification
 - focus-jump and audio playback share one 10-second cooldown window
+- if mp3 playback is unavailable, the runtime falls back to the window-system bell
 
 ### `align_map`
 
@@ -396,6 +404,7 @@ Code-level dependencies:
 - `PyYAML`
 - `Pillow`
 - `pygame`
+- `python-bidi`
 - `tkinter`
 
 Environment note from current scan:
