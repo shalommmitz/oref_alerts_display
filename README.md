@@ -2,6 +2,8 @@
 
 Local display of PIKUD-HAOREF alerts and related status on a standalone map of Israel.
 
+Current version: `1.00`
+
 The goal of this project is fast local response and reduced dependence on third-party web sites. Alerts are fetched directly, resolved to local coordinates, and rendered on a local map window.
 
 ## What It Does

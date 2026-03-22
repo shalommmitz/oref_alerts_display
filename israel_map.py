@@ -1281,6 +1281,7 @@ class IsraelMap:
 
         about_lines = (
             "Local map viewer for Home Front Command alerts and recent alert history.",
+            "Version: 1.00",
             "Project concept, requirements, and operational direction by Shalom Mitz.",
             "Implementation assistance by Codex, based on GPT-5, from OpenAI.",
             "License: MIT.",
