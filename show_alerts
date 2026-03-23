@@ -62,6 +62,38 @@ def load_test_alert() -> tuple[object | None, str]:
     return normalize_live_alert(raw_alert), str(raw_alert)
 
 
+def describe_notification_trigger(alert, alert_source: str) -> str:
+    # 1. Keep the focus-change reason concise but specific enough that the log
+    #    can tell which alert path caused a raise-to-front event.
+    # 2. Include the title plus a short locality sample because that is usually
+    #    the fastest way for the operator to recognize the triggering alert.
+    source_label = {
+        "live": "live alert",
+        "recovery_replay": "recovery replay",
+        "test": "test alert",
+    }.get(alert_source, alert_source)
+    locality_preview = ", ".join(alert.data[:2])
+    if len(alert.data) > 2:
+        locality_preview += ", ..."
+    if locality_preview:
+        return f"{source_label}: {alert.title} [{locality_preview}]"
+    return f"{source_label}: {alert.title}"
+
+
+def summarize_notification_triggers(trigger_descriptions: list[str]) -> str:
+    # 1. Bound the log message length so a burst of many distinct alerts does
+    #    not create an unreadably long focus-change reason.
+    # 2. Preserve the first few triggers verbatim because they are usually the
+    #    most useful clues while investigating an unexpected raise-to-front.
+    if not trigger_descriptions:
+        return "unknown alert trigger"
+    if len(trigger_descriptions) <= 3:
+        return "; ".join(trigger_descriptions)
+    displayed = "; ".join(trigger_descriptions[:3])
+    remainder = len(trigger_descriptions) - 3
+    return f"{displayed}; +{remainder} more"
+
+
 def fetch_replay_alerts(
     history_client: AlertHistoryClient,
     *,
@@ -256,6 +288,7 @@ def main() -> None:
                     alerts_to_process.append((live_alert, alert_text, "live"))
 
             should_notify_operator = False
+            notification_trigger_descriptions: list[str] = []
             for alert, alert_text, alert_source in alerts_to_process:
                 is_new_alert = alert.key not in known_lookup
                 biggest_alert_size = handle_alert(
@@ -272,6 +305,9 @@ def main() -> None:
                 )
                 if is_new_alert and alert_source != "startup_replay":
                     should_notify_operator = True
+                    notification_trigger_descriptions.append(
+                        describe_notification_trigger(alert, alert_source)
+                    )
 
             if should_notify_operator:
                 # 1. Startup replay is intentionally excluded so the window does
@@ -292,7 +328,11 @@ def main() -> None:
                         or (now_monotonic - last_operator_notification_at) >= NOTIFICATION_COOLDOWN_SECONDS
                     )
                 if focus_enabled and cooldown_elapsed:
-                    map_view.present_window()
+                    map_view.present_window(
+                        trigger_description=summarize_notification_triggers(
+                            notification_trigger_descriptions
+                        )
+                    )
                 if audio_enabled and cooldown_elapsed:
                     if not audio_player.play():
                         map_view.ring_bell()

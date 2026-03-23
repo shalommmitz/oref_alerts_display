@@ -322,7 +322,7 @@ class IsraelMap:
         except tk.TclError:
             self._finalize_close()
 
-    def present_window(self) -> None:
+    def present_window(self, *, trigger_description: str) -> None:
         # 1. Try the standard "raise and focus" sequence first because it works
         #    across the mainstream desktop platforms supported by Tk.
         # 2. Briefly toggling topmost helps some window managers actually move
@@ -338,6 +338,23 @@ class IsraelMap:
             except tk.TclError:
                 pass
             self.root.focus_force()
+            self._log_focus_change(f"Main window raised to front ({trigger_description})")
+        except tk.TclError:
+            return
+
+    def send_window_to_back(self) -> None:
+        # 1. Clear any temporary topmost flag first so a previous "bring to
+        #    front" action does not fight the request to push the window back.
+        # 2. `lower()` is the standard Tk mechanism for sending a toplevel
+        #    behind other windows on the current desktop.
+        if self._closed or not self.root.winfo_exists():
+            return
+        try:
+            try:
+                self.root.attributes("-topmost", False)
+            except tk.TclError:
+                pass
+            self.root.lower()
         except tk.TclError:
             return
 
@@ -459,6 +476,25 @@ class IsraelMap:
             button.configure(menu=menu)
             button.pack(side="left", padx=(0, 4))
 
+        def add_menu_action(label: str, command: Callable[[], None]) -> None:
+            button = tk.Button(
+                menu_frame,
+                text=label,
+                command=command,
+                relief="flat",
+                bd=0,
+                padx=10,
+                pady=1,
+                bg=colors["panel_bg"],
+                fg=colors["button_fg"],
+                activebackground=colors["button_active_bg"],
+                activeforeground=colors["button_active_fg"],
+                highlightthickness=0,
+                font=self._STATUS_AND_BUTTON_FONT,
+                takefocus=False,
+            )
+            button.pack(side="left", padx=(0, 4))
+
         add_menu_button(
             "File",
             (
@@ -474,6 +510,7 @@ class IsraelMap:
                 ("Clear", self._clear_map_control),
             ),
         )
+        add_menu_action("Send to Back", self.send_window_to_back)
         add_menu_button(
             "Help",
             (
@@ -1365,6 +1402,7 @@ class IsraelMap:
         dialog.geometry(f"+{x}+{y}")
         dialog.grab_set()
         dialog.lift()
+        self._log_focus_change(f"Modal dialog opened ({dialog.title()})")
         if focus_widget is not None and focus_widget.winfo_exists():
             focus_widget.focus_force()
             if hasattr(focus_widget, "icursor"):
@@ -1640,6 +1678,17 @@ class IsraelMap:
             from utils import log
 
             log(f"{message}: {exc}")
+        except Exception:
+            pass
+
+    def _log_focus_change(self, trigger_description: str) -> None:
+        # 1. Keep focus-change logging centralized so all raise/focus paths use
+        #    the same wording and can be audited from one place.
+        # 2. Import lazily to avoid creating a module-level cycle with utils.
+        try:
+            from utils import log
+
+            log(f"Focus change: {trigger_description}")
         except Exception:
             pass
 

@@ -1,19 +1,21 @@
+from __future__ import annotations
+
 import time
-from pathlib import Path
 from datetime import datetime
-from typing import Callable
+from pathlib import Path
 import shutil
 import sys
+from typing import Callable, Optional
 
 import yaml
 from israel_map import IsraelMap
 
 BASE_DIR = Path(__file__).resolve().parent
-_LOG_TIME_SINK: Callable[[str], None] | None = None
+_LOG_TIME_SINK: Optional[Callable[[str], None]] = None
 _TERMINAL_LINE_WIDTH = max(20, shutil.get_terminal_size(fallback=(80, 24)).columns)
 
 
-def set_log_time_sink(sink: Callable[[str], None] | None) -> None:
+def set_log_time_sink(sink: Optional[Callable[[str], None]]) -> None:
     global _LOG_TIME_SINK
     _LOG_TIME_SINK = sink
 

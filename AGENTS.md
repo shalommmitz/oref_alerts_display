@@ -184,7 +184,7 @@ Key behaviors:
 - optionally resizes and pads the image
 - converts latitude/longitude into image coordinates using a calibrated transform
 - draws markers on a `tk.Canvas`
-- creates an in-canvas `File/Edit/Help` menu strip when `show_controls=True`
+- creates an in-canvas top menu strip when `show_controls=True`
 - renders a compact lower-left watchdog overlay without increasing window height
 - supports both blocking and non-blocking usage
 - persists both image-save and alert-notification settings in `settings.yaml`
@@ -246,7 +246,8 @@ Current menu structure when `show_controls=True`:
 
 - `File` -> `Save`, `Settings`, `Exit`
 - `Edit` -> `Clear`
-- `Help` -> `Color Legend`, `About`
+- `Send to Back` -> lowers the map window behind other windows
+- `Help` -> `Usage`, `Color Legend`, `About`
 
 Current interactive click behavior:
 
@@ -405,6 +406,8 @@ Code-level dependencies:
 - `Pillow`
 - `pygame`
 - `python-bidi`
+- `tzdata`
+- `backports.zoneinfo` on Python 3.8
 - `tkinter`
 
 Environment note from current scan:
@@ -412,6 +415,8 @@ Environment note from current scan:
 - in the current shell, `tkinter` and `Pillow` import successfully
 - `requests` and `yaml` do not import in the active Python environment
 - `pygame` availability was not verified in the active Python environment
+- `tkinter` is an OS-provided module on many systems and should not be treated as a normal pip-installed dependency
+- Python 3.8 and newer are the supported runtime targets; Ubuntu 20.04's default Python 3.8 is an explicit support target
 
 Implication:
 

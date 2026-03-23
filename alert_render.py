@@ -133,12 +133,10 @@ def _alert_color(alert: AlertEvent, log_fn: Callable[[str], None]) -> str:
     if is_event_ended_alert(alert):
         return "gray"
 
-    match alert.cat:
-        case "1":
-            return "red"
-        case "2" | "6":
-            # 3. The official category metadata maps current id 2 (`uav`) to the
-            #    older matrix id 6 that this project also treats as UAV intrusion.
-            return "purple"
-        case _:
-            raise ValueError(f"Unknown alert code {alert.cat}")
+    if alert.cat == "1":
+        return "red"
+    if alert.cat in {"2", "6"}:
+        # 3. The official category metadata maps current id 2 (`uav`) to the
+        #    older matrix id 6 that this project also treats as UAV intrusion.
+        return "purple"
+    raise ValueError(f"Unknown alert code {alert.cat}")

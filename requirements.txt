@@ -3,3 +3,5 @@ PyYAML
 Pillow
 pygame
 python-bidi
+tzdata
+backports.zoneinfo; python_version < "3.9"

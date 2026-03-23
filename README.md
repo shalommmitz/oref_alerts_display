@@ -41,12 +41,14 @@ The goal of this project is fast local response and reduced dependence on third-
 
 ## Runtime Requirements
 
-- Python 3.12 or compatible modern Python 3.
+- Python 3.8 or newer.
 - `requests`
 - `PyYAML`
 - `Pillow`
 - `pygame`
 - `python-bidi`
+- `tzdata`
+- `backports.zoneinfo` on Python 3.8
 - `tkinter`
 
 Example install in a normal Python environment:
@@ -58,8 +60,13 @@ python3 -m pip install -r requirements.txt
 Notes:
 
 - `tkinter` is usually installed through the OS package manager, not `pip`.
+- On Debian/Ubuntu, install it with `sudo apt install python3-tk`.
+- On Fedora, install it with `sudo dnf install python3-tkinter`.
+- On Arch, install it with `sudo pacman -S tk`.
 - The map window needs a graphical display. In a headless container or server, you need an X server or equivalent display backend.
 - Audible alerts use `pygame` to play `ocean_4s.mp3`. If mp3 playback is unavailable, the app logs the problem and falls back to the window-system bell instead of staying silent.
+- `tzdata` is included so `ZoneInfo("Asia/Jerusalem")` works even on machines without system timezone data.
+- On Python 3.8, `backports.zoneinfo` is installed automatically so the same timezone logic works on Ubuntu 20.04's default Python.
 
 ## Quick Start With `create_venv`
 
@@ -77,6 +84,9 @@ What `create_venv` does:
 - creates a fresh `venv`
 - writes a small helper file `v` containing `. venv/bin/activate`
 - installs from `requirements.txt`
+- verifies that the interpreter is Python 3.8 or newer
+- verifies that the required Python modules import successfully
+- stops with a clear message if `tkinter` is missing from the OS installation
 
 This is the recommended local setup flow for this repository.
 
@@ -98,8 +108,8 @@ What happens:
 - Each alerted locality is matched against the local coordinate table and drawn on the map.
 - "Event ended" markers are automatically removed 10 minutes after their alert appearance time.
 - Expired markers are cleared incrementally so large expiry batches do not monopolize the UI thread.
-- The map window exposes a standard top menu inside the canvas: `File`, `Edit`, and `Help`.
-- `File` includes `Save`, `Settings`, and `Exit`; `Edit` includes `Clear`; `Help` includes `Color Legend` and `About`.
+- The map window exposes a standard top menu inside the canvas: `File`, `Edit`, `Send to Back`, and `Help`.
+- `File` includes `Save`, `Settings`, and `Exit`; `Edit` includes `Clear`; `Send to Back` lowers the map window; `Help` includes `Usage`, `Color Legend`, and `About`.
 - `Settings` stores both image-save preferences and alert-notification preferences in `settings.yaml`.
 - If `Bring Window to Front` is enabled, non-startup alerts raise the map window above other windows.
 - If `Play Audible Alert` is enabled, non-startup alerts play `ocean_4s.mp3`.
