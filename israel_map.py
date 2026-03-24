@@ -20,6 +20,9 @@ except Exception:
     _get_bidi_display = None
 
 
+APP_VERSION = "1.1"
+
+
 @dataclass(frozen=True)
 class _MapBounds:
     min_lat: float = 29.45
@@ -44,6 +47,17 @@ class _LocalityPoint:
     longitude: float
     x: float
     y: float
+
+
+@dataclass(frozen=True)
+class _MapViewSpec:
+    key: str
+    crop_left: float
+    crop_top: float
+    crop_right: float
+    crop_bottom: float
+    scale: float
+    image: Image.Image
 
 
 class IsraelMap:
@@ -111,6 +125,7 @@ class IsraelMap:
     _DEFAULT_SAVE_SCALE = "100"
     _DEFAULT_FOCUS_ON_ALERT = False
     _DEFAULT_AUDIBLE_ALERT = False
+    _DEFAULT_LOCALIZED_AUTO_ZOOM = False
     _STATUS_EDGE_MARGIN = 8
     _STATUS_STACK_GAP = 6
     _STATUS_PANEL_Y_OFFSET = 14
@@ -139,37 +154,42 @@ class IsraelMap:
         self.bounds = _MapBounds()
         self._closed = False
         self._drawn_markers: dict[int, _DrawCommand] = {}
+        self._background_image_id: int | None = None
         self._menu_frame: tk.Frame | None = None
         self._menu_window_id: int | None = None
         self._modal_dialog: tk.Toplevel | None = None
         self._modal_kind: str | None = None
         self._nearest_locality_text: str | None = None
         self._locality_points: list[_LocalityPoint] | None = None
-        self._settings_dialog_snapshot: tuple[bool, str, str, bool, bool] | None = None
+        self._settings_dialog_snapshot: tuple[bool, str, str, bool, bool, bool] | None = None
         self._log_time_background_id: int | None = None
         self._log_time_text_id: int | None = None
         self._watchdog_background_id: int | None = None
         self._watchdog_icon_id: int | None = None
         self._watchdog_text_id: int | None = None
+        self._watchdog_level = "offline"
+        self._watchdog_pulse_on = False
         self._save_include_datetime_var: tk.BooleanVar | None = None
         self._save_base_name_var: tk.StringVar | None = None
         self._save_scale_var: tk.StringVar | None = None
         self._focus_on_alert_var: tk.BooleanVar | None = None
         self._audible_alert_var: tk.BooleanVar | None = None
+        self._localized_auto_zoom_var: tk.BooleanVar | None = None
 
         resolved_image_path = self._resolve_background_path(image_path)
-        self._background_image = Image.open(resolved_image_path).convert("RGB")
+        self._base_content_image = Image.open(resolved_image_path).convert("RGB")
         if width is not None or height is not None:
-            target_width = width if width is not None else self._background_image.width
-            target_height = height if height is not None else self._background_image.height
-            self._background_image = self._background_image.resize(
+            target_width = width if width is not None else self._base_content_image.width
+            target_height = height if height is not None else self._base_content_image.height
+            self._base_content_image = self._base_content_image.resize(
                 (target_width, target_height),
                 Image.Resampling.LANCZOS,
             )
-        self._content_width = self._background_image.width
-        self._content_height = self._background_image.height
-        if self.padding:
-            self._background_image = self._pad_image(self._background_image, self.padding)
+        self._content_width = self._base_content_image.width
+        self._content_height = self._base_content_image.height
+        self._view_specs = self._build_view_specs(self._base_content_image)
+        self._current_view_key = "full"
+        self._background_image = self._view_specs[self._current_view_key].image
 
         self.width = self._background_image.width
         self.height = self._background_image.height
@@ -183,6 +203,7 @@ class IsraelMap:
         self._save_scale_var = tk.StringVar(master=self.root, value="100")
         self._focus_on_alert_var = tk.BooleanVar(master=self.root, value=False)
         self._audible_alert_var = tk.BooleanVar(master=self.root, value=False)
+        self._localized_auto_zoom_var = tk.BooleanVar(master=self.root, value=False)
         self._load_save_settings()
         self.canvas = tk.Canvas(
             self.root,
@@ -194,7 +215,7 @@ class IsraelMap:
         self.canvas.pack()
 
         self._background_photo = self._create_photo_image(self._background_image)
-        self.canvas.create_image(0, 0, anchor="nw", image=self._background_photo)
+        self._background_image_id = self.canvas.create_image(0, 0, anchor="nw", image=self._background_photo)
         if show_controls:
             self._create_menu_bar()
             self._enable_canvas_lookup()
@@ -213,39 +234,11 @@ class IsraelMap:
         """Draw a marker on the map by geographic coordinate."""
         self._validate_draw_params(latitude, longitude, color, shape, size)
 
-        x, y = self._latlon_to_xy(latitude, longitude)
         draw_color = self._resolve_draw_color(color)
-        half = size / 2
-
-        if shape == "circle":
-            item_id = self.canvas.create_oval(
-                x - half,
-                y - half,
-                x + half,
-                y + half,
-                fill=draw_color,
-                outline=draw_color,
-            )
-        elif shape == "square":
-            item_id = self.canvas.create_rectangle(
-                x - half,
-                y - half,
-                x + half,
-                y + half,
-                fill=draw_color,
-                outline=draw_color,
-            )
-        else:
-            item_id = self.canvas.create_rectangle(
-                x - half,
-                y - (size * 0.30),
-                x + half,
-                y + (size * 0.30),
-                fill=draw_color,
-                outline=draw_color,
-            )
+        item_id = self._create_marker_item(shape, draw_color)
 
         self._drawn_markers[item_id] = _DrawCommand(latitude, longitude, color, shape, size)
+        self._position_marker_item(item_id, self._drawn_markers[item_id])
         self._raise_overlays()
         if refresh is None:
             refresh = self.auto_refresh
@@ -275,6 +268,8 @@ class IsraelMap:
         for item_id in tuple(self._drawn_markers):
             self.canvas.delete(item_id)
         self._drawn_markers.clear()
+        self._locality_points = None
+        self._apply_view("full")
         if refresh is None:
             refresh = self.auto_refresh
         if refresh:
@@ -364,6 +359,17 @@ class IsraelMap:
     def audible_alert_enabled(self) -> bool:
         return self._audible_alert_value()
 
+    def localized_auto_zoom_enabled(self) -> bool:
+        return self._localized_auto_zoom_value()
+
+    def refresh_localized_zoom(self) -> None:
+        # 1. Recompute the preferred map view from the currently visible alert
+        #    markers only when the caller explicitly requests it.
+        # 2. This lets show_alerts trigger zoom changes only for new alerts,
+        #    while expiry and gray-marker cleanup can leave the current view alone.
+        desired_view_key = self._pick_localized_view_key()
+        self._apply_view(desired_view_key)
+
     def ring_bell(self) -> None:
         if self._closed or not self.root.winfo_exists():
             return
@@ -389,6 +395,10 @@ class IsraelMap:
             pass
 
     def _latlon_to_xy(self, lat: float, lon: float) -> tuple[float, float]:
+        base_x, base_y = self._latlon_to_base_xy(lat, lon)
+        return self._base_xy_to_view_xy(base_x, base_y)
+
+    def _latlon_to_base_xy(self, lat: float, lon: float) -> tuple[float, float]:
         # Calibration is fitted against control cities collected with align_map on
         # the 413x1015 outline asset. The normalized geographic basis keeps the
         # transform stable and lets it scale cleanly when the image is resized.
@@ -419,9 +429,172 @@ class IsraelMap:
         )
         x_ratio = sum(coeff * feature for coeff, feature in zip(x_coeffs, features))
         y_ratio = sum(coeff * feature for coeff, feature in zip(y_coeffs, features))
-        x = self.padding + (x_ratio * self._content_width)
-        y = self.padding + (y_ratio * self._content_height)
+        x = x_ratio * self._content_width
+        y = y_ratio * self._content_height
         return x, y
+
+    def _base_xy_to_view_xy(self, base_x: float, base_y: float) -> tuple[float, float]:
+        view = self._view_specs[self._current_view_key]
+        x = self.padding + ((base_x - view.crop_left) * view.scale)
+        y = self.padding + ((base_y - view.crop_top) * view.scale)
+        return x, y
+
+    def _create_marker_item(self, shape: str, draw_color: str) -> int:
+        if shape == "circle":
+            return self.canvas.create_oval(0, 0, 0, 0, fill=draw_color, outline=draw_color)
+        return self.canvas.create_rectangle(0, 0, 0, 0, fill=draw_color, outline=draw_color)
+
+    def _position_marker_item(self, item_id: int, marker: _DrawCommand) -> None:
+        x, y = self._latlon_to_xy(marker.latitude, marker.longitude)
+        half = marker.size / 2
+        if marker.shape == "circle":
+            self.canvas.coords(item_id, x - half, y - half, x + half, y + half)
+        elif marker.shape == "square":
+            self.canvas.coords(item_id, x - half, y - half, x + half, y + half)
+        else:
+            self.canvas.coords(
+                item_id,
+                x - half,
+                y - (marker.size * 0.30),
+                x + half,
+                y + (marker.size * 0.30),
+            )
+
+    def _reposition_drawn_markers(self) -> None:
+        for item_id, marker in self._drawn_markers.items():
+            self._position_marker_item(item_id, marker)
+
+    def _build_view_specs(self, base_image: Image.Image) -> dict[str, _MapViewSpec]:
+        content_width = base_image.width
+        content_height = base_image.height
+        top_half_bottom = int(round(content_height * 0.5))
+        bottom_half_top = content_height - top_half_bottom
+        middle_top = int(round(content_height * 0.25))
+        middle_bottom = content_height - middle_top
+
+        return {
+            "full": self._create_view_spec(
+                key="full",
+                image=base_image,
+                crop_box=(0, 0, content_width, content_height),
+                scale=1.0,
+            ),
+            "top_half_x2": self._create_view_spec(
+                key="top_half_x2",
+                image=base_image,
+                crop_box=(0, 0, content_width, top_half_bottom),
+                scale=2.0,
+            ),
+            "middle_half_x2": self._create_view_spec(
+                key="middle_half_x2",
+                image=base_image,
+                crop_box=(0, middle_top, content_width, middle_bottom),
+                scale=2.0,
+            ),
+            "bottom_half_x2": self._create_view_spec(
+                key="bottom_half_x2",
+                image=base_image,
+                crop_box=(0, bottom_half_top, content_width, content_height),
+                scale=2.0,
+            ),
+        }
+
+    def _create_view_spec(
+        self,
+        *,
+        key: str,
+        image: Image.Image,
+        crop_box: tuple[int, int, int, int],
+        scale: float,
+    ) -> _MapViewSpec:
+        cropped_image = image.crop(crop_box)
+        if scale != 1.0:
+            cropped_image = cropped_image.resize(
+                (
+                    max(1, int(round(cropped_image.width * scale))),
+                    max(1, int(round(cropped_image.height * scale))),
+                ),
+                Image.Resampling.LANCZOS,
+            )
+        if self.padding:
+            cropped_image = self._pad_image(cropped_image, self.padding)
+        return _MapViewSpec(
+            key=key,
+            crop_left=float(crop_box[0]),
+            crop_top=float(crop_box[1]),
+            crop_right=float(crop_box[2]),
+            crop_bottom=float(crop_box[3]),
+            scale=float(scale),
+            image=cropped_image,
+        )
+
+    def _pick_localized_view_key(self) -> str:
+        if not self._localized_auto_zoom_value():
+            return "full"
+
+        relevant_points: list[tuple[float, float]] = []
+        for marker in self._drawn_markers.values():
+            if marker.color == "gray":
+                continue
+            relevant_points.append(self._latlon_to_base_xy(marker.latitude, marker.longitude))
+
+        if not relevant_points:
+            return "full"
+
+        center_y = sum(point[1] for point in relevant_points) / len(relevant_points)
+        matching_views = []
+        for view_key in ("top_half_x2", "middle_half_x2", "bottom_half_x2"):
+            view = self._view_specs[view_key]
+            if all(
+                view.crop_left <= x <= view.crop_right
+                and view.crop_top <= y <= view.crop_bottom
+                for x, y in relevant_points
+            ):
+                crop_center_y = (view.crop_top + view.crop_bottom) / 2.0
+                matching_views.append((abs(center_y - crop_center_y), view_key))
+
+        if not matching_views:
+            return "full"
+
+        matching_views.sort(key=lambda item: item[0])
+        return matching_views[0][1]
+
+    def _apply_view(self, view_key: str) -> None:
+        if view_key not in self._view_specs:
+            raise ValueError(f"Unknown map view {view_key}")
+        if self._current_view_key == view_key:
+            return
+
+        self._current_view_key = view_key
+        self._background_image = self._view_specs[view_key].image
+        self.width = self._background_image.width
+        self.height = self._background_image.height
+        self.background_color = self._rgb_to_hex(self._background_image.getpixel((0, 0)))
+        self._background_photo = self._create_photo_image(self._background_image)
+        self._locality_points = None
+
+        self.canvas.configure(
+            width=self.width,
+            height=self.height,
+            bg=self.background_color,
+            scrollregion=(0, 0, self.width, self.height),
+        )
+        if self._background_image_id is not None:
+            self.canvas.itemconfigure(self._background_image_id, image=self._background_photo)
+            self.canvas.coords(self._background_image_id, 0, 0)
+        if self._menu_window_id is not None:
+            self.canvas.itemconfigure(self._menu_window_id, width=self.width)
+
+        self._reposition_drawn_markers()
+        self.root.update_idletasks()
+        if self._watchdog_text_id is not None:
+            self._layout_watchdog_panel(
+                self._WATCHDOG_COLORS.get(self._watchdog_level, self._WATCHDOG_COLORS["offline"]),
+                pulse_on=self._watchdog_pulse_on,
+            )
+        if self._log_time_text_id is not None:
+            self._layout_log_timestamp_panel()
+        self._raise_overlays()
 
     def _create_photo_image(self, image: Image.Image) -> tk.PhotoImage:
         buffer = io.BytesIO()
@@ -827,6 +1000,8 @@ class IsraelMap:
         #    the window height and stays separated from the top menu.
         # 2. A pulsing icon makes it obvious when the UI loop itself has stopped
         #    progressing, because the pulse will freeze in place.
+        self._watchdog_level = level
+        self._watchdog_pulse_on = pulse_on
         colors = self._WATCHDOG_COLORS.get(level, self._WATCHDOG_COLORS["offline"])
         if self._watchdog_text_id is None:
             self._watchdog_text_id = self.canvas.create_text(
@@ -963,6 +1138,7 @@ class IsraelMap:
             self._save_scale_value(),
             self._focus_on_alert_value(),
             self._audible_alert_value(),
+            self._localized_auto_zoom_value(),
         )
 
         colors = self._CONTROL_COLORS
@@ -1121,6 +1297,41 @@ class IsraelMap:
             font=("TkDefaultFont", 10),
         )
         audible_checkbox.pack(fill="x", pady=(10, 0))
+
+        map_display_panel = tk.LabelFrame(
+            body,
+            text="Map Display",
+            width=260,
+            height=68,
+            bg="#f7f8f9",
+            fg="#5a6168",
+            bd=1,
+            relief="solid",
+            padx=14,
+            pady=12,
+            font=("TkDefaultFont", 10, "bold"),
+            labelanchor="nw",
+        )
+        map_display_panel.pack(fill="x", pady=(12, 0))
+        map_display_panel.pack_propagate(False)
+
+        auto_zoom_checkbox = tk.Checkbutton(
+            map_display_panel,
+            text="Auto Zoom x2 for Localized Alerts",
+            variable=self._localized_auto_zoom_var,
+            anchor="w",
+            bg="#f7f8f9",
+            fg=colors["button_fg"],
+            activebackground="#f7f8f9",
+            activeforeground=colors["button_active_fg"],
+            selectcolor="#f1f3f5",
+            highlightthickness=0,
+            bd=0,
+            padx=0,
+            pady=0,
+            font=("TkDefaultFont", 10),
+        )
+        auto_zoom_checkbox.pack(fill="x")
 
         button_row = tk.Frame(body, bg="#eef0f2")
         button_row.pack(fill="x", pady=(14, 0))
@@ -1318,7 +1529,7 @@ class IsraelMap:
 
         about_lines = (
             "Local map viewer for Home Front Command alerts and recent alert history.",
-            "Version: 1.00",
+            f"Version: {APP_VERSION}",
             "Project concept, requirements, and operational direction by Shalom Mitz.",
             "Implementation assistance by Codex, based on GPT-5, from OpenAI.",
             "License: MIT.",
@@ -1465,13 +1676,14 @@ class IsraelMap:
         self._modal_kind = None
         self._nearest_locality_text = None
         if modal_kind == "settings" and self._settings_dialog_snapshot is not None:
-            include_datetime, base_name, scale, focus_on_alert, audible_alert = self._settings_dialog_snapshot
+            include_datetime, base_name, scale, focus_on_alert, audible_alert, localized_auto_zoom = self._settings_dialog_snapshot
             self._apply_save_settings(
                 include_datetime=include_datetime,
                 base_name=base_name,
                 scale=scale,
                 focus_on_alert=focus_on_alert,
                 audible_alert=audible_alert,
+                localized_auto_zoom=localized_auto_zoom,
             )
         self._settings_dialog_snapshot = None
         if dialog.winfo_exists():
@@ -1493,6 +1705,7 @@ class IsraelMap:
             return
         self._settings_dialog_snapshot = None
         self._save_settings_to_disk()
+        self.refresh_localized_zoom()
         self._close_modal_dialog()
 
     def _load_save_settings(self) -> None:
@@ -1502,6 +1715,7 @@ class IsraelMap:
             scale=self._DEFAULT_SAVE_SCALE,
             focus_on_alert=self._DEFAULT_FOCUS_ON_ALERT,
             audible_alert=self._DEFAULT_AUDIBLE_ALERT,
+            localized_auto_zoom=self._DEFAULT_LOCALIZED_AUTO_ZOOM,
         )
 
         path = Path.cwd() / self._SETTINGS_FILENAME
@@ -1520,6 +1734,7 @@ class IsraelMap:
             scale=loaded.get("scale_percent", self._DEFAULT_SAVE_SCALE),
             focus_on_alert=loaded.get("focus_on_alert", self._DEFAULT_FOCUS_ON_ALERT),
             audible_alert=loaded.get("audible_alert", self._DEFAULT_AUDIBLE_ALERT),
+            localized_auto_zoom=loaded.get("localized_auto_zoom", self._DEFAULT_LOCALIZED_AUTO_ZOOM),
         )
 
     def _save_settings_to_disk(self) -> None:
@@ -1603,12 +1818,14 @@ class IsraelMap:
         include_datetime = "true" if self._save_include_datetime_value() else "false"
         focus_on_alert = "true" if self._focus_on_alert_value() else "false"
         audible_alert = "true" if self._audible_alert_value() else "false"
+        localized_auto_zoom = "true" if self._localized_auto_zoom_value() else "false"
         base_name = json.dumps(self._save_base_name_value(), ensure_ascii=False)
         scale_percent = json.dumps(self._save_scale_value())
         return (
             f"include_datetime: {include_datetime}\n"
             f"focus_on_alert: {focus_on_alert}\n"
             f"audible_alert: {audible_alert}\n"
+            f"localized_auto_zoom: {localized_auto_zoom}\n"
             f"base_name: {base_name}\n"
             f"scale_percent: {scale_percent}\n"
         )
@@ -1625,7 +1842,7 @@ class IsraelMap:
 
             normalized_key = key.strip()
             raw_value = value.strip()
-            if normalized_key in {"include_datetime", "focus_on_alert", "audible_alert"}:
+            if normalized_key in {"include_datetime", "focus_on_alert", "audible_alert", "localized_auto_zoom"}:
                 settings[normalized_key] = raw_value.casefold() in {"true", "yes", "on", "1"}
             elif normalized_key in {"base_name", "scale_percent"}:
                 settings[normalized_key] = self._parse_settings_string(raw_value)
@@ -1646,6 +1863,7 @@ class IsraelMap:
         scale: str,
         focus_on_alert: bool,
         audible_alert: bool,
+        localized_auto_zoom: bool,
     ) -> None:
         if self._save_include_datetime_var is not None:
             self._save_include_datetime_var.set(bool(include_datetime))
@@ -1657,6 +1875,8 @@ class IsraelMap:
             self._focus_on_alert_var.set(bool(focus_on_alert))
         if self._audible_alert_var is not None:
             self._audible_alert_var.set(bool(audible_alert))
+        if self._localized_auto_zoom_var is not None:
+            self._localized_auto_zoom_var.set(bool(localized_auto_zoom))
 
     def _save_include_datetime_value(self) -> bool:
         return bool(self._save_include_datetime_var.get()) if self._save_include_datetime_var is not None else False
@@ -1672,6 +1892,9 @@ class IsraelMap:
 
     def _audible_alert_value(self) -> bool:
         return bool(self._audible_alert_var.get()) if self._audible_alert_var is not None else self._DEFAULT_AUDIBLE_ALERT
+
+    def _localized_auto_zoom_value(self) -> bool:
+        return bool(self._localized_auto_zoom_var.get()) if self._localized_auto_zoom_var is not None else self._DEFAULT_LOCALIZED_AUTO_ZOOM
 
     def _log_failure(self, message: str, exc: Exception) -> None:
         try:

@@ -187,7 +187,8 @@ Key behaviors:
 - creates an in-canvas top menu strip when `show_controls=True`
 - renders a compact lower-left watchdog overlay without increasing window height
 - supports both blocking and non-blocking usage
-- persists both image-save and alert-notification settings in `settings.yaml`
+- persists image-save, alert-notification, and map-display settings in `settings.yaml`
+- precomputes localized `2x` zoom views and can switch between them without redrawing marker ids
 - resolves nearest-settlement lookups from clicks in interactive mode
 
 Public methods:
@@ -259,6 +260,7 @@ Current Settings dialog sections:
 
 - `Image Save Options`
 - `Alert Notification`
+- `Map Display`
 
 Current persisted settings in `settings.yaml`:
 
@@ -267,6 +269,15 @@ Current persisted settings in `settings.yaml`:
 - `scale_percent`
 - `focus_on_alert`
 - `audible_alert`
+- `localized_auto_zoom`
+
+Current localized zoom behavior:
+
+- precomputes three zoomed background variants at launch: top-half `2x`, middle-half `2x`, bottom-half `2x`
+- evaluates zoom only when new non-gray alerts are added
+- uses all currently visible non-gray markers when deciding whether one zoom region contains them all
+- does not reassess zoom when gray `Event Ended` markers appear or when those markers later expire
+- keeps marker sizes unchanged in pixels while zoomed
 
 Current alert-notification behavior:
 

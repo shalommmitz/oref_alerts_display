@@ -15,7 +15,7 @@ from alert_expiry import AlertExpiryManager
 from alert_fetcher import AlertFetcher
 from alert_history import AlertHistoryClient
 from alert_model import current_oref_time, decode_alert_text, normalize_live_alert, parse_live_alert_text
-from alert_render import AlertMarkerRegistry, draw_alert, persist_alert_artifacts
+from alert_render import AlertMarkerRegistry, draw_alert, is_event_ended_alert, persist_alert_artifacts
 from israel_map import IsraelMap
 from utils import log
 from watchdog import WatchdogMonitor
@@ -288,6 +288,7 @@ def main() -> None:
                     alerts_to_process.append((live_alert, alert_text, "live"))
 
             should_notify_operator = False
+            should_reassess_zoom = False
             notification_trigger_descriptions: list[str] = []
             for alert, alert_text, alert_source in alerts_to_process:
                 is_new_alert = alert.key not in known_lookup
@@ -308,6 +309,11 @@ def main() -> None:
                     notification_trigger_descriptions.append(
                         describe_notification_trigger(alert, alert_source)
                     )
+                if is_new_alert and not is_event_ended_alert(alert):
+                    should_reassess_zoom = True
+
+            if should_reassess_zoom:
+                map_view.refresh_localized_zoom()
 
             if should_notify_operator:
                 # 1. Startup replay is intentionally excluded so the window does

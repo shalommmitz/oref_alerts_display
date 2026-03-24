@@ -2,7 +2,7 @@
 
 Local display of PIKUD-HAOREF alerts and related status on a standalone map of Israel.
 
-Current version: `1.00`
+Current version: `1.1`
 
 The goal of this project is fast local response and reduced dependence on third-party web sites. Alerts are fetched directly, resolved to local coordinates, and rendered on a local map window.
 
@@ -12,6 +12,7 @@ The goal of this project is fast local response and reduced dependence on third-
 - Decodes BOM-prefixed JSON safely.
 - Resolves alert localities to WGS84 latitude/longitude using a local YAML lookup table.
 - Draws alerts on a local Israel outline image.
+- Optionally auto-zooms to a `2x` localized half-map view when all current non-gray alerts fit in one region.
 - Supports a non-blocking map API so callers can run their own loop.
 - Includes sample alert payloads and a placeholder reference loop for custom integrations.
 
@@ -110,9 +111,11 @@ What happens:
 - Expired markers are cleared incrementally so large expiry batches do not monopolize the UI thread.
 - The map window exposes a standard top menu inside the canvas: `File`, `Edit`, `Send to Back`, and `Help`.
 - `File` includes `Save`, `Settings`, and `Exit`; `Edit` includes `Clear`; `Send to Back` lowers the map window; `Help` includes `Usage`, `Color Legend`, and `About`.
-- `Settings` stores both image-save preferences and alert-notification preferences in `settings.yaml`.
+- `Settings` stores image-save, alert-notification, and map-display preferences in `settings.yaml`.
 - If `Bring Window to Front` is enabled, non-startup alerts raise the map window above other windows.
 - If `Play Audible Alert` is enabled, non-startup alerts play `ocean_4s.mp3`.
+- If `Auto Zoom x2 for Localized Alerts` is enabled, the app precomputes three zoomed half-map views at launch and switches to one of them only when newly arrived non-gray alerts all fit in the same region.
+- Gray `Event Ended` markers do not trigger zoom reassessment, and automatic gray-marker expiry does not trigger it either.
 - Focus-jump and audible-alert notifications share a 10-second cooldown, so alert bursts do not repeatedly steal focus or replay sound.
 - Clicking inside the map image opens a modal showing the nearest settlement name and coordinates, with `Close` and `Copy and Close` actions.
 - The settlement-name field is selectable for name-only copy, and uses `python-bidi` for stronger Hebrew RTL rendering when available.
@@ -223,11 +226,12 @@ The runtime code expects that generated file to exist in the project directory.
 - Coordinate placement uses a calibrated normalized lat/lon transform fitted against control points collected on the current outline asset. Do not assume the current mapping is a pure geographic projection.
 - All shapes share the same coordinate transform.
 - When `show_controls=True`, `IsraelMap` creates an in-canvas menu strip that overlays the top of the image instead of increasing the window height.
-- The Settings dialog includes `Image Save Options` and `Alert Notification`, and persists both sections to `settings.yaml`.
+- The Settings dialog includes `Image Save Options`, `Alert Notification`, and `Map Display`, and persists all three sections to `settings.yaml`.
 - In interactive mode, clicking the image resolves the nearest locality from `locality_latitude_longitude.yaml` using the current map projection.
 - Startup history replay does not trigger focus-jump or audio notifications, but live alerts and recovery replay alerts do.
 - Operator notifications use one shared 10-second cooldown across focus-jump and audio playback.
 - `IsraelMap.remove_marker()` removes a specific marker without affecting later markers drawn at the same locality.
+- `IsraelMap` precomputes full, top-half `2x`, middle-half `2x`, and bottom-half `2x` background views in memory at launch instead of writing derived images into the repository.
 - `localities.yaml` has priority over `cities.json` when generating the runtime locality lookup.
 - The alert endpoint may return UTF-8 BOM-prefixed JSON. `show_alerts` handles this explicitly.
 - History replay rows are normalized to the same in-memory schema as live alerts before deduplication and drawing.
