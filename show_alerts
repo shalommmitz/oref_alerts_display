@@ -10,6 +10,7 @@ from time import monotonic
 import yaml
 
 import utils
+from alert_blink import AlertBlinkManager
 from alert_audio import AudioAlertPlayer
 from alert_expiry import AlertExpiryManager
 from alert_fetcher import AlertFetcher
@@ -137,12 +138,12 @@ def handle_alert(
     map_view: IsraelMap,
     expiry_manager: AlertExpiryManager,
     marker_registry: AlertMarkerRegistry,
-) -> int:
+) -> tuple[int, list[int]]:
     # 1. Skip alerts that were already processed, whether they came from live polling
     #    or from the history replay path.
     # 2. Keep the persistence and drawing work centralized in one helper call site.
     if alert.key in known_lookup:
-        return biggest_alert_size
+        return biggest_alert_size, []
 
     biggest_alert_size = persist_alert_artifacts(
         alert,
@@ -154,7 +155,7 @@ def handle_alert(
     print(len(alert_text), alert_text)
     marker_ids = draw_alert(map_view, coords, alert, log, marker_registry)
     expiry_manager.remember_drawn_alert(alert, marker_ids)
-    return biggest_alert_size
+    return biggest_alert_size, marker_ids
 
 
 def main() -> None:
@@ -172,6 +173,7 @@ def main() -> None:
     known_order: list[str] = []
     known_lookup: set[str] = set()
     history_client = AlertHistoryClient(URL_HISTORY, REQUEST_TIMEOUT)
+    blink_manager = AlertBlinkManager()
     expiry_manager = AlertExpiryManager()
     marker_registry = AlertMarkerRegistry()
     watchdog = WatchdogMonitor(
@@ -204,6 +206,7 @@ def main() -> None:
 
     try:
         while map_view.is_open():
+            blink_enabled = map_view.blink_on_appearing_enabled()
             watchdog.note_ui_heartbeat()
             watchdog_snapshot = watchdog.snapshot()
             watchdog_state = (watchdog_snapshot.level, watchdog_snapshot.reason_code)
@@ -220,6 +223,10 @@ def main() -> None:
             )
             # 3. Let time-based cleanup run continuously, even while the app is idle
             #    or the network is temporarily unavailable.
+            if blink_enabled:
+                blink_manager.update(map_view)
+            else:
+                blink_manager.clear(map_view)
             expiry_manager.expire_due_markers(map_view, log_fn=log)
             alerts_to_process: list[tuple[object, str, str]] = []
 
@@ -235,7 +242,11 @@ def main() -> None:
                 # 4. Poll the worker thread and keep the UI responsive while we wait.
                 fetch_result = fetcher.poll()
                 if fetch_result is None:
-                    if not utils.sleep_with_ui(map_view, 0.1):
+                    if not utils.sleep_with_ui(
+                        map_view,
+                        0.1,
+                        on_tick=lambda: blink_manager.update(map_view) if map_view.blink_on_appearing_enabled() else blink_manager.clear(map_view),
+                    ):
                         break
                     continue
                 watchdog.note_pipeline_update()
@@ -292,7 +303,7 @@ def main() -> None:
             notification_trigger_descriptions: list[str] = []
             for alert, alert_text, alert_source in alerts_to_process:
                 is_new_alert = alert.key not in known_lookup
-                biggest_alert_size = handle_alert(
+                biggest_alert_size, marker_ids = handle_alert(
                     alert,
                     alert_text=alert_text,
                     base_dir=BASE_DIR,
@@ -304,6 +315,8 @@ def main() -> None:
                     expiry_manager=expiry_manager,
                     marker_registry=marker_registry,
                 )
+                if blink_enabled and is_new_alert and alert_source != "startup_replay":
+                    blink_manager.remember_markers(marker_ids)
                 if is_new_alert and alert_source != "startup_replay":
                     should_notify_operator = True
                     notification_trigger_descriptions.append(
@@ -347,7 +360,13 @@ def main() -> None:
 
             if not map_view.update():
                 break
-            if TEST and (not utils.sleep_with_ui(map_view, POLL_INTERVAL_SECONDS)):
+            if TEST and (
+                not utils.sleep_with_ui(
+                    map_view,
+                    POLL_INTERVAL_SECONDS,
+                    on_tick=lambda: blink_manager.update(map_view) if map_view.blink_on_appearing_enabled() else blink_manager.clear(map_view),
+                )
+            ):
                 break
     finally:
         if fetcher is not None:

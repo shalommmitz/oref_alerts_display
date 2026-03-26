@@ -55,10 +55,12 @@ def _emit_runtime_line(msg, *, persist: bool):
     sys.stdout.write(f"\r{' ' * _TERMINAL_LINE_WIDTH}\r{line_text[:_TERMINAL_LINE_WIDTH]}")
     sys.stdout.flush()
 
-def sleep_with_ui(map_view: IsraelMap, seconds: float) -> bool:
+def sleep_with_ui(map_view: IsraelMap, seconds: float, *, on_tick: Optional[Callable[[], None]] = None) -> bool:
     """Sleep in small steps so the Tk window stays responsive."""
     deadline = time.monotonic() + seconds
     while time.monotonic() < deadline:
+        if on_tick is not None:
+            on_tick()
         if not map_view.update():
             return False
         time.sleep(0.1)

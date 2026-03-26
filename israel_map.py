@@ -125,6 +125,7 @@ class IsraelMap:
     _DEFAULT_SAVE_SCALE = "100"
     _DEFAULT_FOCUS_ON_ALERT = False
     _DEFAULT_AUDIBLE_ALERT = False
+    _DEFAULT_BLINK_ON_APPEARING = True
     _DEFAULT_LOCALIZED_AUTO_ZOOM = False
     _STATUS_EDGE_MARGIN = 8
     _STATUS_STACK_GAP = 6
@@ -154,6 +155,7 @@ class IsraelMap:
         self.bounds = _MapBounds()
         self._closed = False
         self._drawn_markers: dict[int, _DrawCommand] = {}
+        self._hidden_marker_ids: set[int] = set()
         self._background_image_id: int | None = None
         self._menu_frame: tk.Frame | None = None
         self._menu_window_id: int | None = None
@@ -161,7 +163,7 @@ class IsraelMap:
         self._modal_kind: str | None = None
         self._nearest_locality_text: str | None = None
         self._locality_points: list[_LocalityPoint] | None = None
-        self._settings_dialog_snapshot: tuple[bool, str, str, bool, bool, bool] | None = None
+        self._settings_dialog_snapshot: tuple[bool, str, str, bool, bool, bool, bool] | None = None
         self._log_time_background_id: int | None = None
         self._log_time_text_id: int | None = None
         self._watchdog_background_id: int | None = None
@@ -174,6 +176,7 @@ class IsraelMap:
         self._save_scale_var: tk.StringVar | None = None
         self._focus_on_alert_var: tk.BooleanVar | None = None
         self._audible_alert_var: tk.BooleanVar | None = None
+        self._blink_on_appearing_var: tk.BooleanVar | None = None
         self._localized_auto_zoom_var: tk.BooleanVar | None = None
 
         resolved_image_path = self._resolve_background_path(image_path)
@@ -203,6 +206,7 @@ class IsraelMap:
         self._save_scale_var = tk.StringVar(master=self.root, value="100")
         self._focus_on_alert_var = tk.BooleanVar(master=self.root, value=False)
         self._audible_alert_var = tk.BooleanVar(master=self.root, value=False)
+        self._blink_on_appearing_var = tk.BooleanVar(master=self.root, value=True)
         self._localized_auto_zoom_var = tk.BooleanVar(master=self.root, value=False)
         self._load_save_settings()
         self.canvas = tk.Canvas(
@@ -256,7 +260,27 @@ class IsraelMap:
             return False
 
         self._drawn_markers.pop(item_id, None)
+        self._hidden_marker_ids.discard(item_id)
         self.canvas.delete(item_id)
+        if refresh is None:
+            refresh = self.auto_refresh
+        if refresh:
+            self.process_events()
+        return True
+
+    def set_marker_visible(self, item_id: int, visible: bool, refresh: bool | None = None) -> bool:
+        # 1. Keep marker visibility changes centralized so blinking, saving, and
+        #    future marker-state features share one authoritative path.
+        # 2. Track hidden ids explicitly because the export path needs to know
+        #    whether a marker is currently visible on screen.
+        if item_id not in self._drawn_markers:
+            return False
+
+        if visible:
+            self._hidden_marker_ids.discard(item_id)
+        else:
+            self._hidden_marker_ids.add(item_id)
+        self.canvas.itemconfigure(item_id, state="normal" if visible else "hidden")
         if refresh is None:
             refresh = self.auto_refresh
         if refresh:
@@ -268,6 +292,7 @@ class IsraelMap:
         for item_id in tuple(self._drawn_markers):
             self.canvas.delete(item_id)
         self._drawn_markers.clear()
+        self._hidden_marker_ids.clear()
         self._locality_points = None
         self._apply_view("full")
         if refresh is None:
@@ -358,6 +383,9 @@ class IsraelMap:
 
     def audible_alert_enabled(self) -> bool:
         return self._audible_alert_value()
+
+    def blink_on_appearing_enabled(self) -> bool:
+        return self._blink_on_appearing_value()
 
     def localized_auto_zoom_enabled(self) -> bool:
         return self._localized_auto_zoom_value()
@@ -1138,11 +1166,118 @@ class IsraelMap:
             self._save_scale_value(),
             self._focus_on_alert_value(),
             self._audible_alert_value(),
+            self._blink_on_appearing_value(),
             self._localized_auto_zoom_value(),
         )
 
         colors = self._CONTROL_COLORS
         dialog, body = self._open_modal_shell("Settings", kind="settings")
+
+        notification_panel = tk.LabelFrame(
+            body,
+            text="Alert Notification",
+            width=260,
+            height=126,
+            bg="#f7f8f9",
+            fg="#5a6168",
+            bd=1,
+            relief="solid",
+            padx=14,
+            pady=12,
+            font=("TkDefaultFont", 10, "bold"),
+            labelanchor="nw",
+        )
+        notification_panel.pack(fill="x", pady=(12, 0))
+        notification_panel.pack_propagate(False)
+
+        focus_checkbox = tk.Checkbutton(
+            notification_panel,
+            text="Bring Window to Front",
+            variable=self._focus_on_alert_var,
+            anchor="w",
+            bg="#f7f8f9",
+            fg=colors["button_fg"],
+            activebackground="#f7f8f9",
+            activeforeground=colors["button_active_fg"],
+            selectcolor="#f1f3f5",
+            highlightthickness=0,
+            bd=0,
+            padx=0,
+            pady=0,
+            font=("TkDefaultFont", 10),
+        )
+        focus_checkbox.pack(fill="x")
+
+        audible_checkbox = tk.Checkbutton(
+            notification_panel,
+            text="Play Audible Alert",
+            variable=self._audible_alert_var,
+            anchor="w",
+            bg="#f7f8f9",
+            fg=colors["button_fg"],
+            activebackground="#f7f8f9",
+            activeforeground=colors["button_active_fg"],
+            selectcolor="#f1f3f5",
+            highlightthickness=0,
+            bd=0,
+            padx=0,
+            pady=0,
+            font=("TkDefaultFont", 10),
+        )
+        audible_checkbox.pack(fill="x", pady=(10, 0))
+
+        blink_checkbox = tk.Checkbutton(
+            notification_panel,
+            text="Blink New Alerts on Appearing",
+            variable=self._blink_on_appearing_var,
+            anchor="w",
+            bg="#f7f8f9",
+            fg=colors["button_fg"],
+            activebackground="#f7f8f9",
+            activeforeground=colors["button_active_fg"],
+            selectcolor="#f1f3f5",
+            highlightthickness=0,
+            bd=0,
+            padx=0,
+            pady=0,
+            font=("TkDefaultFont", 10),
+        )
+        blink_checkbox.pack(fill="x", pady=(10, 0))
+
+        map_display_panel = tk.LabelFrame(
+            body,
+            text="Map Display",
+            width=260,
+            height=68,
+            bg="#f7f8f9",
+            fg="#5a6168",
+            bd=1,
+            relief="solid",
+            padx=14,
+            pady=12,
+            font=("TkDefaultFont", 10, "bold"),
+            labelanchor="nw",
+        )
+        map_display_panel.pack(fill="x", pady=(12, 0))
+        map_display_panel.pack_propagate(False)
+
+        auto_zoom_checkbox = tk.Checkbutton(
+            map_display_panel,
+            text="Auto Zoom x2 for Localized Alerts",
+            variable=self._localized_auto_zoom_var,
+            anchor="w",
+            bg="#f7f8f9",
+            fg=colors["button_fg"],
+            activebackground="#f7f8f9",
+            activeforeground=colors["button_active_fg"],
+            selectcolor="#f1f3f5",
+            highlightthickness=0,
+            bd=0,
+            padx=0,
+            pady=0,
+            font=("TkDefaultFont", 10),
+        )
+        auto_zoom_checkbox.pack(fill="x")
 
         form_panel = tk.LabelFrame(
             body,
@@ -1158,7 +1293,7 @@ class IsraelMap:
             font=("TkDefaultFont", 10, "bold"),
             labelanchor="nw",
         )
-        form_panel.pack(fill="x")
+        form_panel.pack(fill="x", pady=(12, 0))
         form_panel.pack_propagate(False)
 
         base_name_label = tk.Label(
@@ -1244,94 +1379,6 @@ class IsraelMap:
             font=("TkDefaultFont", 10),
         )
         scale_suffix.pack(side="left")
-
-        notification_panel = tk.LabelFrame(
-            body,
-            text="Alert Notification",
-            width=260,
-            height=94,
-            bg="#f7f8f9",
-            fg="#5a6168",
-            bd=1,
-            relief="solid",
-            padx=14,
-            pady=12,
-            font=("TkDefaultFont", 10, "bold"),
-            labelanchor="nw",
-        )
-        notification_panel.pack(fill="x", pady=(12, 0))
-        notification_panel.pack_propagate(False)
-
-        focus_checkbox = tk.Checkbutton(
-            notification_panel,
-            text="Bring Window to Front",
-            variable=self._focus_on_alert_var,
-            anchor="w",
-            bg="#f7f8f9",
-            fg=colors["button_fg"],
-            activebackground="#f7f8f9",
-            activeforeground=colors["button_active_fg"],
-            selectcolor="#f1f3f5",
-            highlightthickness=0,
-            bd=0,
-            padx=0,
-            pady=0,
-            font=("TkDefaultFont", 10),
-        )
-        focus_checkbox.pack(fill="x")
-
-        audible_checkbox = tk.Checkbutton(
-            notification_panel,
-            text="Play Audible Alert",
-            variable=self._audible_alert_var,
-            anchor="w",
-            bg="#f7f8f9",
-            fg=colors["button_fg"],
-            activebackground="#f7f8f9",
-            activeforeground=colors["button_active_fg"],
-            selectcolor="#f1f3f5",
-            highlightthickness=0,
-            bd=0,
-            padx=0,
-            pady=0,
-            font=("TkDefaultFont", 10),
-        )
-        audible_checkbox.pack(fill="x", pady=(10, 0))
-
-        map_display_panel = tk.LabelFrame(
-            body,
-            text="Map Display",
-            width=260,
-            height=68,
-            bg="#f7f8f9",
-            fg="#5a6168",
-            bd=1,
-            relief="solid",
-            padx=14,
-            pady=12,
-            font=("TkDefaultFont", 10, "bold"),
-            labelanchor="nw",
-        )
-        map_display_panel.pack(fill="x", pady=(12, 0))
-        map_display_panel.pack_propagate(False)
-
-        auto_zoom_checkbox = tk.Checkbutton(
-            map_display_panel,
-            text="Auto Zoom x2 for Localized Alerts",
-            variable=self._localized_auto_zoom_var,
-            anchor="w",
-            bg="#f7f8f9",
-            fg=colors["button_fg"],
-            activebackground="#f7f8f9",
-            activeforeground=colors["button_active_fg"],
-            selectcolor="#f1f3f5",
-            highlightthickness=0,
-            bd=0,
-            padx=0,
-            pady=0,
-            font=("TkDefaultFont", 10),
-        )
-        auto_zoom_checkbox.pack(fill="x")
 
         button_row = tk.Frame(body, bg="#eef0f2")
         button_row.pack(fill="x", pady=(14, 0))
@@ -1676,13 +1723,14 @@ class IsraelMap:
         self._modal_kind = None
         self._nearest_locality_text = None
         if modal_kind == "settings" and self._settings_dialog_snapshot is not None:
-            include_datetime, base_name, scale, focus_on_alert, audible_alert, localized_auto_zoom = self._settings_dialog_snapshot
+            include_datetime, base_name, scale, focus_on_alert, audible_alert, blink_on_appearing, localized_auto_zoom = self._settings_dialog_snapshot
             self._apply_save_settings(
                 include_datetime=include_datetime,
                 base_name=base_name,
                 scale=scale,
                 focus_on_alert=focus_on_alert,
                 audible_alert=audible_alert,
+                blink_on_appearing=blink_on_appearing,
                 localized_auto_zoom=localized_auto_zoom,
             )
         self._settings_dialog_snapshot = None
@@ -1715,6 +1763,7 @@ class IsraelMap:
             scale=self._DEFAULT_SAVE_SCALE,
             focus_on_alert=self._DEFAULT_FOCUS_ON_ALERT,
             audible_alert=self._DEFAULT_AUDIBLE_ALERT,
+            blink_on_appearing=self._DEFAULT_BLINK_ON_APPEARING,
             localized_auto_zoom=self._DEFAULT_LOCALIZED_AUTO_ZOOM,
         )
 
@@ -1734,6 +1783,7 @@ class IsraelMap:
             scale=loaded.get("scale_percent", self._DEFAULT_SAVE_SCALE),
             focus_on_alert=loaded.get("focus_on_alert", self._DEFAULT_FOCUS_ON_ALERT),
             audible_alert=loaded.get("audible_alert", self._DEFAULT_AUDIBLE_ALERT),
+            blink_on_appearing=loaded.get("blink_on_appearing", self._DEFAULT_BLINK_ON_APPEARING),
             localized_auto_zoom=loaded.get("localized_auto_zoom", self._DEFAULT_LOCALIZED_AUTO_ZOOM),
         )
 
@@ -1762,10 +1812,12 @@ class IsraelMap:
     def _render_current_map_image(self) -> Image.Image:
         image = self._background_image.copy()
         draw = ImageDraw.Draw(image)
-        for marker in self._drawn_markers.values():
+        for item_id, marker in self._drawn_markers.items():
             x, y = self._latlon_to_xy(marker.latitude, marker.longitude)
             color = self._resolve_draw_color(marker.color)
             half = marker.size / 2
+            if item_id in self._hidden_marker_ids:
+                continue
             if marker.shape == "circle":
                 draw.ellipse(
                     (x - half, y - half, x + half, y + half),
@@ -1818,6 +1870,7 @@ class IsraelMap:
         include_datetime = "true" if self._save_include_datetime_value() else "false"
         focus_on_alert = "true" if self._focus_on_alert_value() else "false"
         audible_alert = "true" if self._audible_alert_value() else "false"
+        blink_on_appearing = "true" if self._blink_on_appearing_value() else "false"
         localized_auto_zoom = "true" if self._localized_auto_zoom_value() else "false"
         base_name = json.dumps(self._save_base_name_value(), ensure_ascii=False)
         scale_percent = json.dumps(self._save_scale_value())
@@ -1825,6 +1878,7 @@ class IsraelMap:
             f"include_datetime: {include_datetime}\n"
             f"focus_on_alert: {focus_on_alert}\n"
             f"audible_alert: {audible_alert}\n"
+            f"blink_on_appearing: {blink_on_appearing}\n"
             f"localized_auto_zoom: {localized_auto_zoom}\n"
             f"base_name: {base_name}\n"
             f"scale_percent: {scale_percent}\n"
@@ -1842,7 +1896,7 @@ class IsraelMap:
 
             normalized_key = key.strip()
             raw_value = value.strip()
-            if normalized_key in {"include_datetime", "focus_on_alert", "audible_alert", "localized_auto_zoom"}:
+            if normalized_key in {"include_datetime", "focus_on_alert", "audible_alert", "blink_on_appearing", "localized_auto_zoom"}:
                 settings[normalized_key] = raw_value.casefold() in {"true", "yes", "on", "1"}
             elif normalized_key in {"base_name", "scale_percent"}:
                 settings[normalized_key] = self._parse_settings_string(raw_value)
@@ -1863,6 +1917,7 @@ class IsraelMap:
         scale: str,
         focus_on_alert: bool,
         audible_alert: bool,
+        blink_on_appearing: bool,
         localized_auto_zoom: bool,
     ) -> None:
         if self._save_include_datetime_var is not None:
@@ -1875,6 +1930,8 @@ class IsraelMap:
             self._focus_on_alert_var.set(bool(focus_on_alert))
         if self._audible_alert_var is not None:
             self._audible_alert_var.set(bool(audible_alert))
+        if self._blink_on_appearing_var is not None:
+            self._blink_on_appearing_var.set(bool(blink_on_appearing))
         if self._localized_auto_zoom_var is not None:
             self._localized_auto_zoom_var.set(bool(localized_auto_zoom))
 
@@ -1892,6 +1949,9 @@ class IsraelMap:
 
     def _audible_alert_value(self) -> bool:
         return bool(self._audible_alert_var.get()) if self._audible_alert_var is not None else self._DEFAULT_AUDIBLE_ALERT
+
+    def _blink_on_appearing_value(self) -> bool:
+        return bool(self._blink_on_appearing_var.get()) if self._blink_on_appearing_var is not None else self._DEFAULT_BLINK_ON_APPEARING
 
     def _localized_auto_zoom_value(self) -> bool:
         return bool(self._localized_auto_zoom_var.get()) if self._localized_auto_zoom_var is not None else self._DEFAULT_LOCALIZED_AUTO_ZOOM

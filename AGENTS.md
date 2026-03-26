@@ -21,6 +21,7 @@ Current repo contents relevant to runtime behavior:
 - `alert_fetcher.py`: background live-alert polling worker
 - `watchdog.py`: thread-safe health monitor for UI heartbeat, fetch attempts, update age, and Online/Offline state
 - `alert_audio.py`: asynchronous audible alert playback helper
+- `alert_blink.py`: 10-second blinking window for newly drawn markers
 - `alert_expiry.py`: time-based cleanup for auto-cleared markers
 - `alert_history.py`: history replay client for startup and recovery
 - `alert_model.py`: alert normalization helpers
@@ -269,6 +270,7 @@ Current persisted settings in `settings.yaml`:
 - `scale_percent`
 - `focus_on_alert`
 - `audible_alert`
+- `blink_on_appearing`
 - `localized_auto_zoom`
 
 Current localized zoom behavior:
@@ -283,9 +285,19 @@ Current alert-notification behavior:
 
 - `focus_on_alert` raises and focuses the map window for non-startup alerts
 - `audible_alert` plays `ocean_4s.mp3` for non-startup alerts
+- `blink_on_appearing` controls whether newly drawn non-startup alerts blink, and defaults to enabled
 - startup history replay does not trigger either notification
 - focus-jump and audio playback share one 10-second cooldown window
 - if mp3 playback is unavailable, the runtime falls back to the window-system bell
+
+Current marker-blink behavior:
+
+- every newly drawn alert marker blinks for 10 seconds
+- blink cadence is 1 second visible, 1 second hidden
+- blinking applies to all alert categories, including gray `Event Ended`
+- startup history replay alerts are excluded from blinking
+- the operator can disable blinking in Settings, and doing so restores any currently hidden blinking markers immediately
+- blinking is updated from the main loop rather than from a separate thread
 
 ### `align_map`
 
