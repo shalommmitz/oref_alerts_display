@@ -1189,12 +1189,13 @@ class IsraelMap:
         )
 
         colors = self._CONTROL_COLORS
+        settings_panel_width = 320
         dialog, body = self._open_modal_shell("Settings", kind="settings")
 
         notification_panel = tk.LabelFrame(
             body,
             text="Alert Notification",
-            width=260,
+            width=settings_panel_width,
             height=126,
             bg="#f7f8f9",
             fg="#5a6168",
@@ -1265,7 +1266,7 @@ class IsraelMap:
         map_display_panel = tk.LabelFrame(
             body,
             text="Map Display",
-            width=260,
+            width=settings_panel_width,
             height=68,
             bg="#f7f8f9",
             fg="#5a6168",
@@ -1300,8 +1301,7 @@ class IsraelMap:
         history_replay_panel = tk.LabelFrame(
             body,
             text="History Replay",
-            width=260,
-            height=82,
+            width=settings_panel_width,
             bg="#f7f8f9",
             fg="#5a6168",
             bd=1,
@@ -1312,7 +1312,11 @@ class IsraelMap:
             labelanchor="nw",
         )
         history_replay_panel.pack(fill="x", pady=(12, 0))
-        history_replay_panel.pack_propagate(False)
+        # 1. Let this section size to its content so the minutes entry does not
+        #    get clipped on platforms with slightly taller Tk font metrics.
+        # 2. Keep the fixed width so the Settings dialog still aligns visually
+        #    with the other sections.
+        history_replay_panel.configure(width=settings_panel_width)
 
         replay_minutes_label = tk.Label(
             history_replay_panel,
@@ -1357,7 +1361,7 @@ class IsraelMap:
         form_panel = tk.LabelFrame(
             body,
             text="Image Save Options",
-            width=260,
+            width=settings_panel_width,
             height=176,
             bg="#f7f8f9",
             fg="#5a6168",
