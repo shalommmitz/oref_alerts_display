@@ -21,7 +21,7 @@ Current repo contents relevant to runtime behavior:
 - `alert_fetcher.py`: background live-alert polling worker
 - `watchdog.py`: thread-safe health monitor for UI heartbeat, fetch attempts, update age, and Online/Offline state
 - `alert_audio.py`: asynchronous audible alert playback helper
-- `alert_blink.py`: 10-second blinking window for newly drawn markers
+- `alert_blink.py`: 6-second blinking window for newly drawn markers
 - `alert_expiry.py`: time-based cleanup for auto-cleared markers
 - `alert_history.py`: history replay client for startup and recovery
 - `alert_model.py`: alert normalization helpers
@@ -51,7 +51,7 @@ Main loop responsibilities:
 - create `IsraelMap(auto_refresh=False)`
 - start a background live-alert fetcher thread
 - decode the live response using `utf-8-sig` because the endpoint may include a UTF-8 BOM
-- on first successful contact, replay the preceding five minutes of history in old-to-new order
+- on first successful contact, replay the configured startup history window in old-to-new order
 - after a network interruption, replay history rows newer than the last successful live poll
 - normalize live alerts and history rows into one shared runtime shape
 - compute replay timing on the explicit `Asia/Jerusalem` timezone basis
@@ -84,7 +84,7 @@ Configurable endpoints:
 
 Current replay window:
 
-- startup replay: 300 seconds
+- startup replay: configurable in settings, default 180 seconds
 - recovery replay: from the last successful live poll forward
 
 ### `alert_fetcher.py`
@@ -259,9 +259,10 @@ Current interactive click behavior:
 
 Current Settings dialog sections:
 
-- `Image Save Options`
 - `Alert Notification`
 - `Map Display`
+- `History Replay`
+- `Image Save Options`
 
 Current persisted settings in `settings.yaml`:
 
@@ -272,6 +273,7 @@ Current persisted settings in `settings.yaml`:
 - `audible_alert`
 - `blink_on_appearing`
 - `localized_auto_zoom`
+- `startup_history_minutes`
 
 Current localized zoom behavior:
 
@@ -292,7 +294,7 @@ Current alert-notification behavior:
 
 Current marker-blink behavior:
 
-- every newly drawn alert marker blinks for 10 seconds
+- every newly drawn alert marker blinks for 6 seconds
 - blink cadence is 1 second visible, 1 second hidden
 - blinking applies to all alert categories, including gray `Event Ended`
 - startup history replay alerts are excluded from blinking
@@ -502,7 +504,7 @@ If dependencies are available, also verify:
 - `import yaml`
 - `python3 align_map --help`
 - `show_alerts` with `TEST = True`
-- one startup run that replays the previous five minutes of history
+- one startup run that replays the configured startup history window
 - one manual network interruption and recovery check
 - one manual visual check of known reference localities on the map
 

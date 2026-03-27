@@ -102,18 +102,19 @@ What happens:
 
 - A background thread polls `https://www.oref.org.il/warningMessages/alert/Alerts.json`.
 - The Tk thread stays responsive while waiting for network results.
-- On the first successful contact, the script replays the previous five minutes of history from the history endpoint, in old-to-new order.
+- On the first successful contact, the script replays the configured startup history window from the history endpoint, in old-to-new order.
 - After a network interruption, the script fetches history since the last successful live poll and replays any missed alerts.
 - Live alerts and replayed alerts are normalized into the same runtime shape.
 - Replay and expiry timing are anchored to `Asia/Jerusalem`, so they do not depend on the consuming machine's local timezone.
 - New alerts are stored in `last_alert.yaml`.
 - Each alerted locality is matched against the local coordinate table and drawn on the map.
-- Newly drawn alerts blink for their first 10 seconds with a 1-second on / 1-second off cadence, except for history alerts loaded at startup.
+- Newly drawn alerts blink for their first 6 seconds with a 1-second on / 1-second off cadence, except for history alerts loaded at startup.
 - "Event ended" markers are automatically removed 10 minutes after their alert appearance time.
 - Expired markers are cleared incrementally so large expiry batches do not monopolize the UI thread.
 - The map window exposes a standard top menu inside the canvas: `File`, `Edit`, `Send to Back`, and `Help`.
 - `File` includes `Save`, `Settings`, and `Exit`; `Edit` includes `Clear`; `Send to Back` lowers the map window; `Help` includes `Usage`, `Color Legend`, and `About`.
 - `Settings` stores image-save, alert-notification, and map-display preferences in `settings.yaml`.
+- `Settings` also stores the startup history replay window in minutes; the default is 3 minutes.
 - If `Bring Window to Front` is enabled, non-startup alerts raise the map window above other windows.
 - If `Play Audible Alert` is enabled, non-startup alerts play `ocean_4s.mp3`.
 - `Blink New Alerts on Appearing` is enabled by default and can be turned off in Settings.
@@ -229,8 +230,8 @@ The runtime code expects that generated file to exist in the project directory.
 - Coordinate placement uses a calibrated normalized lat/lon transform fitted against control points collected on the current outline asset. Do not assume the current mapping is a pure geographic projection.
 - All shapes share the same coordinate transform.
 - When `show_controls=True`, `IsraelMap` creates an in-canvas menu strip that overlays the top of the image instead of increasing the window height.
-- The Settings dialog includes `Image Save Options`, `Alert Notification`, and `Map Display`, and persists all three sections to `settings.yaml`.
-- The alert-notification settings persisted in `settings.yaml` now include `focus_on_alert`, `audible_alert`, and `blink_on_appearing`.
+- The Settings dialog includes `Alert Notification`, `Map Display`, `History Replay`, and `Image Save Options`, and persists all four sections to `settings.yaml`.
+- The alert-notification and replay settings persisted in `settings.yaml` now include `focus_on_alert`, `audible_alert`, `blink_on_appearing`, and `startup_history_minutes`.
 - In interactive mode, clicking the image resolves the nearest locality from `locality_latitude_longitude.yaml` using the current map projection.
 - Startup history replay does not trigger focus-jump or audio notifications, but live alerts and recovery replay alerts do.
 - Operator notifications use one shared 10-second cooldown across focus-jump and audio playback.

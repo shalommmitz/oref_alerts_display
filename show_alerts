@@ -25,7 +25,6 @@ from watchdog import WatchdogMonitor
 TEST = False
 REQUEST_TIMEOUT = (3.05, 5)
 POLL_INTERVAL_SECONDS = 10
-OREF_REPLAY_LOOKBACK_SECONDS = 300
 NOTIFICATION_COOLDOWN_SECONDS = 10
 MAX_KNOWN_ALERTS = 2000
 URL_ALERTS = os.environ.get(
@@ -102,13 +101,14 @@ def fetch_replay_alerts(
     network_was_down: bool,
     last_live_success_at: datetime | None,
     now: datetime,
+    startup_replay_seconds: int,
 ) -> tuple[list[object], bool, str | None]:
-    # 1. Startup replay asks for the preceding five minutes once, after the first
-    #    successful contact with the live endpoint.
+    # 1. Startup replay asks for the configured launch window once, after the
+    #    first successful contact with the live endpoint.
     # 2. Recovery replay asks only for alerts newer than the last known live success.
     if not startup_replay_done:
         replay_label = "startup"
-        replay_since = now - timedelta(seconds=OREF_REPLAY_LOOKBACK_SECONDS)
+        replay_since = now - timedelta(seconds=startup_replay_seconds)
     elif network_was_down and last_live_success_at is not None:
         replay_label = "recovery"
         replay_since = last_live_success_at
@@ -278,6 +278,7 @@ def main() -> None:
                     network_was_down=network_was_down,
                     last_live_success_at=last_live_success_at,
                     now=now,
+                    startup_replay_seconds=map_view.startup_history_replay_seconds(),
                 )
                 network_was_down = False
                 last_live_success_at = now

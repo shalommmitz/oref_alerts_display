@@ -127,6 +127,7 @@ class IsraelMap:
     _DEFAULT_AUDIBLE_ALERT = False
     _DEFAULT_BLINK_ON_APPEARING = True
     _DEFAULT_LOCALIZED_AUTO_ZOOM = False
+    _DEFAULT_STARTUP_HISTORY_MINUTES = "3"
     _STATUS_EDGE_MARGIN = 8
     _STATUS_STACK_GAP = 6
     _STATUS_PANEL_Y_OFFSET = 14
@@ -163,7 +164,7 @@ class IsraelMap:
         self._modal_kind: str | None = None
         self._nearest_locality_text: str | None = None
         self._locality_points: list[_LocalityPoint] | None = None
-        self._settings_dialog_snapshot: tuple[bool, str, str, bool, bool, bool, bool] | None = None
+        self._settings_dialog_snapshot: tuple[bool, str, str, bool, bool, bool, bool, str] | None = None
         self._log_time_background_id: int | None = None
         self._log_time_text_id: int | None = None
         self._watchdog_background_id: int | None = None
@@ -178,6 +179,7 @@ class IsraelMap:
         self._audible_alert_var: tk.BooleanVar | None = None
         self._blink_on_appearing_var: tk.BooleanVar | None = None
         self._localized_auto_zoom_var: tk.BooleanVar | None = None
+        self._startup_history_minutes_var: tk.StringVar | None = None
 
         resolved_image_path = self._resolve_background_path(image_path)
         self._base_content_image = Image.open(resolved_image_path).convert("RGB")
@@ -208,6 +210,7 @@ class IsraelMap:
         self._audible_alert_var = tk.BooleanVar(master=self.root, value=False)
         self._blink_on_appearing_var = tk.BooleanVar(master=self.root, value=True)
         self._localized_auto_zoom_var = tk.BooleanVar(master=self.root, value=False)
+        self._startup_history_minutes_var = tk.StringVar(master=self.root, value=self._DEFAULT_STARTUP_HISTORY_MINUTES)
         self._load_save_settings()
         self.canvas = tk.Canvas(
             self.root,
@@ -389,6 +392,13 @@ class IsraelMap:
 
     def localized_auto_zoom_enabled(self) -> bool:
         return self._localized_auto_zoom_value()
+
+    def startup_history_replay_seconds(self) -> int:
+        # 1. Keep the startup replay window conversion in one place so callers
+        #    do not duplicate minutes-to-seconds math.
+        # 2. The settings dialog stores minutes because that is friendlier for
+        #    operators, while the runtime cutoff code works in seconds.
+        return self._parse_startup_history_minutes(self._startup_history_minutes_value()) * 60
 
     def refresh_localized_zoom(self) -> None:
         # 1. Recompute the preferred map view from the currently visible alert
@@ -1168,6 +1178,7 @@ class IsraelMap:
             self._audible_alert_value(),
             self._blink_on_appearing_value(),
             self._localized_auto_zoom_value(),
+            self._startup_history_minutes_value(),
         )
 
         colors = self._CONTROL_COLORS
@@ -1278,6 +1289,63 @@ class IsraelMap:
             font=("TkDefaultFont", 10),
         )
         auto_zoom_checkbox.pack(fill="x")
+
+        history_replay_panel = tk.LabelFrame(
+            body,
+            text="History Replay",
+            width=260,
+            height=82,
+            bg="#f7f8f9",
+            fg="#5a6168",
+            bd=1,
+            relief="solid",
+            padx=14,
+            pady=12,
+            font=("TkDefaultFont", 10, "bold"),
+            labelanchor="nw",
+        )
+        history_replay_panel.pack(fill="x", pady=(12, 0))
+        history_replay_panel.pack_propagate(False)
+
+        replay_minutes_label = tk.Label(
+            history_replay_panel,
+            text="Import alerts from the last",
+            anchor="w",
+            bg="#f7f8f9",
+            fg="#5a6168",
+            font=("TkDefaultFont", 9, "bold"),
+        )
+        replay_minutes_label.pack(fill="x")
+
+        replay_minutes_row = tk.Frame(history_replay_panel, bg="#f7f8f9")
+        replay_minutes_row.pack(fill="x", pady=(8, 0))
+
+        replay_minutes_entry = tk.Entry(
+            replay_minutes_row,
+            textvariable=self._startup_history_minutes_var,
+            width=6,
+            justify="right",
+            bd=0,
+            relief="flat",
+            highlightthickness=1,
+            highlightbackground="#c8cdd2",
+            highlightcolor="#9fa6ad",
+            bg="#ffffff",
+            fg=colors["button_active_fg"],
+            insertbackground=colors["button_active_fg"],
+            font=("TkDefaultFont", 10),
+        )
+        replay_minutes_entry.pack(side="left")
+
+        replay_minutes_suffix = tk.Label(
+            replay_minutes_row,
+            text="minutes on launch",
+            anchor="w",
+            bg="#f7f8f9",
+            fg="#5a6168",
+            font=("TkDefaultFont", 10),
+        )
+        replay_minutes_suffix.pack(side="left", padx=(8, 0))
 
         form_panel = tk.LabelFrame(
             body,
@@ -1723,7 +1791,7 @@ class IsraelMap:
         self._modal_kind = None
         self._nearest_locality_text = None
         if modal_kind == "settings" and self._settings_dialog_snapshot is not None:
-            include_datetime, base_name, scale, focus_on_alert, audible_alert, blink_on_appearing, localized_auto_zoom = self._settings_dialog_snapshot
+            include_datetime, base_name, scale, focus_on_alert, audible_alert, blink_on_appearing, localized_auto_zoom, startup_history_minutes = self._settings_dialog_snapshot
             self._apply_save_settings(
                 include_datetime=include_datetime,
                 base_name=base_name,
@@ -1732,6 +1800,7 @@ class IsraelMap:
                 audible_alert=audible_alert,
                 blink_on_appearing=blink_on_appearing,
                 localized_auto_zoom=localized_auto_zoom,
+                startup_history_minutes=startup_history_minutes,
             )
         self._settings_dialog_snapshot = None
         if dialog.winfo_exists():
@@ -1765,6 +1834,7 @@ class IsraelMap:
             audible_alert=self._DEFAULT_AUDIBLE_ALERT,
             blink_on_appearing=self._DEFAULT_BLINK_ON_APPEARING,
             localized_auto_zoom=self._DEFAULT_LOCALIZED_AUTO_ZOOM,
+            startup_history_minutes=self._DEFAULT_STARTUP_HISTORY_MINUTES,
         )
 
         path = Path.cwd() / self._SETTINGS_FILENAME
@@ -1785,6 +1855,7 @@ class IsraelMap:
             audible_alert=loaded.get("audible_alert", self._DEFAULT_AUDIBLE_ALERT),
             blink_on_appearing=loaded.get("blink_on_appearing", self._DEFAULT_BLINK_ON_APPEARING),
             localized_auto_zoom=loaded.get("localized_auto_zoom", self._DEFAULT_LOCALIZED_AUTO_ZOOM),
+            startup_history_minutes=str(loaded.get("startup_history_minutes", self._DEFAULT_STARTUP_HISTORY_MINUTES)),
         )
 
     def _save_settings_to_disk(self) -> None:
@@ -1861,10 +1932,13 @@ class IsraelMap:
         # 1. Use the same validation rules for Settings and Save so the stored
         #    preferences cannot drift away from what the save path accepts.
         # 2. Validate both the filename base and the numeric scale because those
-        #    are the two fields that can make saving fail later.
+        #    are the two save-related fields that can make saving fail later.
+        # 3. Validate the startup replay window here too so settings persistence
+        #    rejects invalid values before they become the new default.
         if not self._save_base_name_value().strip():
             raise ValueError("Base Name is empty")
         self._parse_scale_percent(self._save_scale_value())
+        self._parse_startup_history_minutes(self._startup_history_minutes_value())
 
     def _build_settings_text(self) -> str:
         include_datetime = "true" if self._save_include_datetime_value() else "false"
@@ -1872,6 +1946,7 @@ class IsraelMap:
         audible_alert = "true" if self._audible_alert_value() else "false"
         blink_on_appearing = "true" if self._blink_on_appearing_value() else "false"
         localized_auto_zoom = "true" if self._localized_auto_zoom_value() else "false"
+        startup_history_minutes = self._parse_startup_history_minutes(self._startup_history_minutes_value())
         base_name = json.dumps(self._save_base_name_value(), ensure_ascii=False)
         scale_percent = json.dumps(self._save_scale_value())
         return (
@@ -1880,12 +1955,13 @@ class IsraelMap:
             f"audible_alert: {audible_alert}\n"
             f"blink_on_appearing: {blink_on_appearing}\n"
             f"localized_auto_zoom: {localized_auto_zoom}\n"
+            f"startup_history_minutes: {startup_history_minutes}\n"
             f"base_name: {base_name}\n"
             f"scale_percent: {scale_percent}\n"
         )
 
-    def _parse_settings_text(self, text: str) -> dict[str, bool | str]:
-        settings: dict[str, bool | str] = {}
+    def _parse_settings_text(self, text: str) -> dict[str, bool | str | int]:
+        settings: dict[str, bool | str | int] = {}
         for raw_line in text.splitlines():
             line = raw_line.strip()
             if not line or line.startswith("#"):
@@ -1900,6 +1976,8 @@ class IsraelMap:
                 settings[normalized_key] = raw_value.casefold() in {"true", "yes", "on", "1"}
             elif normalized_key in {"base_name", "scale_percent"}:
                 settings[normalized_key] = self._parse_settings_string(raw_value)
+            elif normalized_key == "startup_history_minutes":
+                settings[normalized_key] = self._parse_settings_int(raw_value)
         return settings
 
     def _parse_settings_string(self, raw_value: str) -> str:
@@ -1908,6 +1986,9 @@ class IsraelMap:
         if raw_value[:1] in {'"', "'"}:
             return str(json.loads(raw_value)) if raw_value[:1] == '"' else str(ast.literal_eval(raw_value))
         return raw_value
+
+    def _parse_settings_int(self, raw_value: str) -> int:
+        return int(self._parse_settings_string(raw_value))
 
     def _apply_save_settings(
         self,
@@ -1919,6 +2000,7 @@ class IsraelMap:
         audible_alert: bool,
         blink_on_appearing: bool,
         localized_auto_zoom: bool,
+        startup_history_minutes: str,
     ) -> None:
         if self._save_include_datetime_var is not None:
             self._save_include_datetime_var.set(bool(include_datetime))
@@ -1934,6 +2016,8 @@ class IsraelMap:
             self._blink_on_appearing_var.set(bool(blink_on_appearing))
         if self._localized_auto_zoom_var is not None:
             self._localized_auto_zoom_var.set(bool(localized_auto_zoom))
+        if self._startup_history_minutes_var is not None:
+            self._startup_history_minutes_var.set(str(startup_history_minutes))
 
     def _save_include_datetime_value(self) -> bool:
         return bool(self._save_include_datetime_var.get()) if self._save_include_datetime_var is not None else False
@@ -1955,6 +2039,23 @@ class IsraelMap:
 
     def _localized_auto_zoom_value(self) -> bool:
         return bool(self._localized_auto_zoom_var.get()) if self._localized_auto_zoom_var is not None else self._DEFAULT_LOCALIZED_AUTO_ZOOM
+
+    def _startup_history_minutes_value(self) -> str:
+        return (
+            self._startup_history_minutes_var.get()
+            if self._startup_history_minutes_var is not None
+            else self._DEFAULT_STARTUP_HISTORY_MINUTES
+        )
+
+    def _parse_startup_history_minutes(self, minutes_text: str) -> int:
+        # 1. Accept zero to let operators disable startup replay without adding
+        #    another checkbox or special-case state.
+        # 2. Require a whole number of minutes because fractional minutes would
+        #    be harder to read in the Settings dialog and provide little value.
+        startup_history_minutes = int(minutes_text.strip())
+        if startup_history_minutes < 0:
+            raise ValueError("Startup history replay minutes cannot be negative")
+        return startup_history_minutes
 
     def _log_failure(self, message: str, exc: Exception) -> None:
         try:

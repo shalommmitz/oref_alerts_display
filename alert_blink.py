@@ -8,7 +8,7 @@ from time import monotonic
 from israel_map import IsraelMap
 
 
-BLINK_DURATION_SECONDS = 10.0
+BLINK_DURATION_SECONDS = 6.0
 
 
 @dataclass
@@ -35,7 +35,7 @@ class AlertBlinkManager:
     def update(self, map_view: IsraelMap, *, now: float | None = None) -> int:
         # 1. Toggle marker visibility from the main loop so blinking stays on
         #    the Tk thread and does not need a separate worker.
-        # 2. After 10 seconds, force the marker visible and stop tracking it.
+        # 2. After 6 seconds, force the marker visible and stop tracking it.
         anchor = monotonic() if now is None else now
         changed_count = 0
         finished_ids: list[int] = []
