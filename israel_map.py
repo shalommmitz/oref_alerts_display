@@ -271,6 +271,13 @@ class IsraelMap:
             self.process_events()
         return True
 
+    def has_marker(self, item_id: int) -> bool:
+        # 1. Expose marker existence checks so higher-level helpers can detect
+        #    when their locality bookkeeping has gone stale after expiry or reset.
+        # 2. This keeps the authoritative marker lifetime inside IsraelMap
+        #    instead of duplicating canvas-state guesses elsewhere.
+        return item_id in self._drawn_markers
+
     def set_marker_visible(self, item_id: int, visible: bool, refresh: bool | None = None) -> bool:
         # 1. Keep marker visibility changes centralized so blinking, saving, and
         #    future marker-state features share one authoritative path.

@@ -297,6 +297,7 @@ Current marker-blink behavior:
 - every newly drawn alert marker blinks for 6 seconds
 - blink cadence is 1 second visible, 1 second hidden
 - blinking applies to all alert categories, including gray `Event Ended`
+- repeated alerts do not restart blinking for localities that are already showing the same alert state
 - startup history replay alerts are excluded from blinking
 - the operator can disable blinking in Settings, and doing so restores any currently hidden blinking markers immediately
 - blinking is updated from the main loop rather than from a separate thread

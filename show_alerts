@@ -141,7 +141,8 @@ def handle_alert(
 ) -> tuple[int, list[int]]:
     # 1. Skip alerts that were already processed, whether they came from live polling
     #    or from the history replay path.
-    # 2. Keep the persistence and drawing work centralized in one helper call site.
+    # 2. Return only the newly added or state-changed marker ids for blinking,
+    #    while still drawing the full alert batch and preserving expiry logic.
     if alert.key in known_lookup:
         return biggest_alert_size, []
 
@@ -153,9 +154,9 @@ def handle_alert(
     log("Alert contents:" + str(alert.raw))
     remember_alert(alert.key, known_order, known_lookup)
     print(len(alert_text), alert_text)
-    marker_ids = draw_alert(map_view, coords, alert, log, marker_registry)
+    marker_ids, changed_marker_ids = draw_alert(map_view, coords, alert, log, marker_registry)
     expiry_manager.remember_drawn_alert(alert, marker_ids)
-    return biggest_alert_size, marker_ids
+    return biggest_alert_size, changed_marker_ids
 
 
 def main() -> None:
@@ -304,7 +305,7 @@ def main() -> None:
             notification_trigger_descriptions: list[str] = []
             for alert, alert_text, alert_source in alerts_to_process:
                 is_new_alert = alert.key not in known_lookup
-                biggest_alert_size, marker_ids = handle_alert(
+                biggest_alert_size, blink_marker_ids = handle_alert(
                     alert,
                     alert_text=alert_text,
                     base_dir=BASE_DIR,
@@ -317,7 +318,7 @@ def main() -> None:
                     marker_registry=marker_registry,
                 )
                 if blink_enabled and is_new_alert and alert_source != "startup_replay":
-                    blink_manager.remember_markers(marker_ids)
+                    blink_manager.remember_markers(blink_marker_ids)
                 if is_new_alert and alert_source != "startup_replay":
                     should_notify_operator = True
                     notification_trigger_descriptions.append(

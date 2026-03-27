@@ -109,6 +109,7 @@ What happens:
 - New alerts are stored in `last_alert.yaml`.
 - Each alerted locality is matched against the local coordinate table and drawn on the map.
 - Newly drawn alerts blink for their first 6 seconds with a 1-second on / 1-second off cadence, except for history alerts loaded at startup.
+- If a repeated alert keeps a locality in the same alert state, that locality does not restart blinking; only newly added or state-changed localities blink.
 - "Event ended" markers are automatically removed 10 minutes after their alert appearance time.
 - Expired markers are cleared incrementally so large expiry batches do not monopolize the UI thread.
 - The map window exposes a standard top menu inside the canvas: `File`, `Edit`, `Send to Back`, and `Help`.

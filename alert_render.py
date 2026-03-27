@@ -17,6 +17,22 @@ class AlertMarkerRegistry:
         # 2. The registry is keyed by the final coordinates lookup key so alerts
         #    that normalize to the same mapped locality replace each other.
         self._marker_by_locality: dict[str, int] = {}
+        self._state_by_locality: dict[str, str] = {}
+
+    def current_state(self, map_view: IsraelMap, *, locality_key: str) -> str | None:
+        # 1. Treat missing canvas markers as "no current state" so stale
+        #    registry entries left behind by expiry or manual clear do not hide
+        #    real state changes from the blink logic.
+        # 2. Keep the cleanup here so callers can ask one question without
+        #    needing separate stale-entry handling.
+        item_id = self._marker_by_locality.get(locality_key)
+        if item_id is None:
+            return None
+        if not map_view.has_marker(item_id):
+            self._marker_by_locality.pop(locality_key, None)
+            self._state_by_locality.pop(locality_key, None)
+            return None
+        return self._state_by_locality.get(locality_key)
 
     def replace_marker(
         self,
@@ -24,6 +40,7 @@ class AlertMarkerRegistry:
         *,
         locality_key: str,
         item_id: int,
+        state_key: str,
     ) -> None:
         # 1. Remove the older marker first so the new alert visibly replaces it
         #    instead of stacking on top of it.
@@ -33,6 +50,7 @@ class AlertMarkerRegistry:
         if previous_item_id is not None and previous_item_id != item_id:
             map_view.remove_marker(previous_item_id, refresh=False)
         self._marker_by_locality[locality_key] = item_id
+        self._state_by_locality[locality_key] = state_key
 
 
 def persist_alert_artifacts(
@@ -60,12 +78,14 @@ def draw_alert(
     alert: AlertEvent,
     log_fn: Callable[[str], None],
     marker_registry: AlertMarkerRegistry,
-) -> list[int]:
+) -> tuple[list[int], list[int]]:
     # 1. Resolve the alert color once per alert and reuse it for every locality.
-    # 2. Keep the marker-drawing loop focused only on locality lookup, replacement,
-    #    and drawing.
+    # 2. Return both all drawn markers and the subset whose locality state
+    #    actually changed, so blinking can ignore repeated same-state localities.
     drawn_marker_ids: list[int] = []
+    changed_marker_ids: list[int] = []
     color = _alert_color(alert, log_fn)
+    state_key = alert_state_key(alert)
     for locality in alert.data:
         coords_key = _find_coords_key(locality, coords)
         if coords_key is None:
@@ -77,14 +97,21 @@ def draw_alert(
 
         latitude = coords[coords_key]["latitude"]
         longitude = coords[coords_key]["longitude"]
+        previous_state_key = marker_registry.current_state(
+            map_view,
+            locality_key=coords_key,
+        )
         item_id = map_view.draw(latitude, longitude, color, "circle", 8, refresh=False)
         marker_registry.replace_marker(
             map_view,
             locality_key=coords_key,
             item_id=item_id,
+            state_key=state_key,
         )
         drawn_marker_ids.append(item_id)
-    return drawn_marker_ids
+        if previous_state_key != state_key:
+            changed_marker_ids.append(item_id)
+    return drawn_marker_ids, changed_marker_ids
 
 
 def is_event_ended_alert(alert: AlertEvent) -> bool:
@@ -102,6 +129,22 @@ def is_upcoming_area_alert(alert: AlertEvent) -> bool:
     #    older saved payloads in this project used category 10.
     # 2. Title matching keeps the decision stable across those source differences.
     return alert.title == "בדקות הקרובות צפויות להתקבל התרעות באזורך"
+
+
+def alert_state_key(alert: AlertEvent) -> str:
+    # 1. Compare alert semantics, not raw ids, so repeated live alerts with new
+    #    upstream ids still count as the same on-map state.
+    # 2. Keep the state vocabulary aligned with the renderer's semantic color
+    #    mapping so blinking decisions match what the operator sees.
+    if is_upcoming_area_alert(alert):
+        return "yellow"
+    if is_event_ended_alert(alert):
+        return "gray"
+    if alert.cat == "1":
+        return "red"
+    if alert.cat in {"2", "6"}:
+        return "purple"
+    return f"unknown:{alert.cat}:{alert.title}"
 
 
 def _find_coords_key(locality: str, coords: dict[str, dict[str, float]]) -> str | None:
