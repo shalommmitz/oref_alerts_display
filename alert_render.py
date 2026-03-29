@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
@@ -9,6 +10,13 @@ import yaml
 
 from alert_model import AlertEvent
 from israel_map import IsraelMap
+
+
+@dataclass
+class AlertDrawResult:
+    marker_ids: list[int]
+    changed_marker_ids: list[int]
+    resolved_points: list[tuple[float, float]]
 
 
 class AlertMarkerRegistry:
@@ -78,12 +86,13 @@ def draw_alert(
     alert: AlertEvent,
     log_fn: Callable[[str], None],
     marker_registry: AlertMarkerRegistry,
-) -> tuple[list[int], list[int]]:
+) -> AlertDrawResult:
     # 1. Resolve the alert color once per alert and reuse it for every locality.
     # 2. Return both all drawn markers and the subset whose locality state
     #    actually changed, so blinking can ignore repeated same-state localities.
     drawn_marker_ids: list[int] = []
     changed_marker_ids: list[int] = []
+    resolved_points: list[tuple[float, float]] = []
     color = _alert_color(alert, log_fn)
     state_key = alert_state_key(alert)
     for locality in alert.data:
@@ -97,6 +106,7 @@ def draw_alert(
 
         latitude = coords[coords_key]["latitude"]
         longitude = coords[coords_key]["longitude"]
+        resolved_points.append((latitude, longitude))
         previous_state_key = marker_registry.current_state(
             map_view,
             locality_key=coords_key,
@@ -111,7 +121,11 @@ def draw_alert(
         drawn_marker_ids.append(item_id)
         if previous_state_key != state_key:
             changed_marker_ids.append(item_id)
-    return drawn_marker_ids, changed_marker_ids
+    return AlertDrawResult(
+        marker_ids=drawn_marker_ids,
+        changed_marker_ids=changed_marker_ids,
+        resolved_points=resolved_points,
+    )
 
 
 def is_event_ended_alert(alert: AlertEvent) -> bool:

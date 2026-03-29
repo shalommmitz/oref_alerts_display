@@ -23,6 +23,7 @@ The goal of this project is fast local response and reduced dependence on third-
 - `watchdog.py`: thread-safe health monitor for UI heartbeat, fetch attempts, update age, and Online/Offline status.
 - `alert_audio.py`: asynchronous audio playback for audible alert notifications.
 - `alert_blink.py`: short attention-window blinking for newly drawn alert markers.
+- `alert_focus_circle.py`: temporary focus-circle overlays for small incoming alerts.
 - `alert_expiry.py`: time-based cleanup for alert markers that should disappear automatically.
 - `alert_history.py`: history replay client for startup catch-up and outage recovery.
 - `alert_model.py`: normalization helpers for live alerts and history rows.
@@ -108,14 +109,16 @@ What happens:
 - Replay and expiry timing are anchored to `Asia/Jerusalem`, so they do not depend on the consuming machine's local timezone.
 - New alerts are stored in `last_alert.yaml`.
 - Each alerted locality is matched against the local coordinate table and drawn on the map.
-- Newly drawn alerts blink for their first 6 seconds with a 1-second on / 1-second off cadence, except for history alerts loaded at startup.
+- Newly drawn alerts blink for their configured attention duration with a 1-second on / 1-second off cadence, except for history alerts loaded at startup.
 - If a repeated alert keeps a locality in the same alert state, that locality does not restart blinking; only newly added or state-changed localities blink.
+- If a new non-startup alert has 6 or fewer localities and `Show Focus Circle for Small Alerts` is enabled, the app draws a pale-blue focus circle around that alert cluster for the same configured attention duration.
 - "Event ended" markers are automatically removed 10 minutes after their alert appearance time.
 - Expired markers are cleared incrementally so large expiry batches do not monopolize the UI thread.
 - The map window exposes a standard top menu inside the canvas: `File`, `Edit`, `Send to Back`, and `Help`.
 - `File` includes `Save`, `Settings`, and `Exit`; `Edit` includes `Clear`; `Send to Back` lowers the map window; `Help` includes `Usage`, `Color Legend`, and `About`.
 - `Settings` stores image-save, alert-notification, and map-display preferences in `settings.yaml`.
 - `Settings` also stores the startup history replay window in minutes; the default is 3 minutes.
+- `Blink / Focus Duration` controls both the marker-blink duration and the small-alert focus-circle duration; the default is 6 seconds.
 - If `Bring Window to Front` is enabled, non-startup alerts raise the map window above other windows.
 - If `Play Audible Alert` is enabled, non-startup alerts play `ocean_4s.mp3`.
 - `Blink New Alerts on Appearing` is enabled by default and can be turned off in Settings.
@@ -232,13 +235,13 @@ The runtime code expects that generated file to exist in the project directory.
 - All shapes share the same coordinate transform.
 - When `show_controls=True`, `IsraelMap` creates an in-canvas menu strip that overlays the top of the image instead of increasing the window height.
 - The Settings dialog includes `Alert Notification`, `Map Display`, `History Replay`, and `Image Save Options`, and persists all four sections to `settings.yaml`.
-- The alert-notification and replay settings persisted in `settings.yaml` now include `focus_on_alert`, `audible_alert`, `blink_on_appearing`, and `startup_history_minutes`.
+- The alert-notification, map-display, and replay settings persisted in `settings.yaml` now include `focus_on_alert`, `audible_alert`, `blink_on_appearing`, `attention_duration_seconds`, `small_alert_focus_circle`, and `startup_history_minutes`.
 - In interactive mode, clicking the image resolves the nearest locality from `locality_latitude_longitude.yaml` using the current map projection.
 - Startup history replay does not trigger focus-jump or audio notifications, but live alerts and recovery replay alerts do.
 - Operator notifications use one shared 10-second cooldown across focus-jump and audio playback.
 - `IsraelMap.remove_marker()` removes a specific marker without affecting later markers drawn at the same locality.
 - `IsraelMap` precomputes full, top-half `2x`, middle-half `2x`, and bottom-half `2x` background views in memory at launch instead of writing derived images into the repository.
-- Marker blinking is driven from the main Tk loop, not a separate thread, so visibility changes stay on the canvas-owning thread.
+- Marker blinking and small-alert focus circles are driven from the main Tk loop, not separate threads, so all transient canvas changes stay on the canvas-owning thread.
 - `localities.yaml` has priority over `cities.json` when generating the runtime locality lookup.
 - The alert endpoint may return UTF-8 BOM-prefixed JSON. `show_alerts` handles this explicitly.
 - History replay rows are normalized to the same in-memory schema as live alerts before deduplication and drawing.

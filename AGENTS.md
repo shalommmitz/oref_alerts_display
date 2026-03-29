@@ -21,7 +21,8 @@ Current repo contents relevant to runtime behavior:
 - `alert_fetcher.py`: background live-alert polling worker
 - `watchdog.py`: thread-safe health monitor for UI heartbeat, fetch attempts, update age, and Online/Offline state
 - `alert_audio.py`: asynchronous audible alert playback helper
-- `alert_blink.py`: 6-second blinking window for newly drawn markers
+- `alert_blink.py`: configurable blinking window for newly drawn markers
+- `alert_focus_circle.py`: temporary focus-circle overlay helper for small incoming alerts
 - `alert_expiry.py`: time-based cleanup for auto-cleared markers
 - `alert_history.py`: history replay client for startup and recovery
 - `alert_model.py`: alert normalization helpers
@@ -61,6 +62,7 @@ Main loop responsibilities:
 - map each alerted locality to coordinates
 - choose a drawing color from alert category
 - draw a circle marker for each matched locality
+- optionally draw a temporary pale-blue focus circle for new alerts with 6 or fewer localities
 - optionally raise the window and play a sound for non-startup alerts, based on persisted settings
 - automatically remove "האירוע הסתיים" markers 10 minutes after their appearance time
 - pump the Tk event loop once per iteration with `map_view.update()`
@@ -272,7 +274,9 @@ Current persisted settings in `settings.yaml`:
 - `focus_on_alert`
 - `audible_alert`
 - `blink_on_appearing`
+- `attention_duration_seconds`
 - `localized_auto_zoom`
+- `small_alert_focus_circle`
 - `startup_history_minutes`
 
 Current localized zoom behavior:
@@ -288,19 +292,28 @@ Current alert-notification behavior:
 - `focus_on_alert` raises and focuses the map window for non-startup alerts
 - `audible_alert` plays `ocean_4s.mp3` for non-startup alerts
 - `blink_on_appearing` controls whether newly drawn non-startup alerts blink, and defaults to enabled
+- `attention_duration_seconds` controls both blink duration and small-alert focus-circle duration, and defaults to 6 seconds
 - startup history replay does not trigger either notification
 - focus-jump and audio playback share one 10-second cooldown window
 - if mp3 playback is unavailable, the runtime falls back to the window-system bell
 
 Current marker-blink behavior:
 
-- every newly drawn alert marker blinks for 6 seconds
+- every newly drawn alert marker blinks for the configured attention duration
 - blink cadence is 1 second visible, 1 second hidden
 - blinking applies to all alert categories, including gray `Event Ended`
 - repeated alerts do not restart blinking for localities that are already showing the same alert state
 - startup history replay alerts are excluded from blinking
 - the operator can disable blinking in Settings, and doing so restores any currently hidden blinking markers immediately
 - blinking is updated from the main loop rather than from a separate thread
+
+Current small-alert focus-circle behavior:
+
+- new non-startup alerts with 6 or fewer localities can draw a pale-blue thin focus circle around the alert cluster center
+- the focus circle lasts for the same configured attention duration used by blinking
+- the focus circle is opt-out through `small_alert_focus_circle`
+- gray `Event Ended` alerts are included in this feature
+- the circle is drawn as a separate overlay item, so removing it restores the exact underlying canvas content
 
 ### `align_map`
 

@@ -41,6 +41,15 @@ class _DrawCommand:
 
 
 @dataclass(frozen=True)
+class _FocusCircleCommand:
+    points: tuple[tuple[float, float], ...]
+    outline_color: str
+    width: int
+    padding: float
+    min_radius: float
+
+
+@dataclass(frozen=True)
 class _LocalityPoint:
     name: str
     latitude: float
@@ -126,7 +135,9 @@ class IsraelMap:
     _DEFAULT_FOCUS_ON_ALERT = False
     _DEFAULT_AUDIBLE_ALERT = False
     _DEFAULT_BLINK_ON_APPEARING = True
+    _DEFAULT_ATTENTION_DURATION_SECONDS = "6"
     _DEFAULT_LOCALIZED_AUTO_ZOOM = False
+    _DEFAULT_SMALL_ALERT_FOCUS_CIRCLE = True
     _DEFAULT_STARTUP_HISTORY_MINUTES = "3"
     _STATUS_EDGE_MARGIN = 8
     _STATUS_STACK_GAP = 6
@@ -156,6 +167,7 @@ class IsraelMap:
         self.bounds = _MapBounds()
         self._closed = False
         self._drawn_markers: dict[int, _DrawCommand] = {}
+        self._focus_circle_items: dict[int, _FocusCircleCommand] = {}
         self._hidden_marker_ids: set[int] = set()
         self._background_image_id: int | None = None
         self._menu_frame: tk.Frame | None = None
@@ -164,7 +176,7 @@ class IsraelMap:
         self._modal_kind: str | None = None
         self._nearest_locality_text: str | None = None
         self._locality_points: list[_LocalityPoint] | None = None
-        self._settings_dialog_snapshot: tuple[bool, str, str, bool, bool, bool, bool, str] | None = None
+        self._settings_dialog_snapshot: tuple[bool, str, str, bool, bool, bool, str, bool, bool, str] | None = None
         self._log_time_background_id: int | None = None
         self._log_time_text_id: int | None = None
         self._watchdog_background_id: int | None = None
@@ -178,7 +190,9 @@ class IsraelMap:
         self._focus_on_alert_var: tk.BooleanVar | None = None
         self._audible_alert_var: tk.BooleanVar | None = None
         self._blink_on_appearing_var: tk.BooleanVar | None = None
+        self._attention_duration_seconds_var: tk.StringVar | None = None
         self._localized_auto_zoom_var: tk.BooleanVar | None = None
+        self._small_alert_focus_circle_var: tk.BooleanVar | None = None
         self._startup_history_minutes_var: tk.StringVar | None = None
 
         resolved_image_path = self._resolve_background_path(image_path)
@@ -209,7 +223,9 @@ class IsraelMap:
         self._focus_on_alert_var = tk.BooleanVar(master=self.root, value=False)
         self._audible_alert_var = tk.BooleanVar(master=self.root, value=False)
         self._blink_on_appearing_var = tk.BooleanVar(master=self.root, value=True)
+        self._attention_duration_seconds_var = tk.StringVar(master=self.root, value=self._DEFAULT_ATTENTION_DURATION_SECONDS)
         self._localized_auto_zoom_var = tk.BooleanVar(master=self.root, value=False)
+        self._small_alert_focus_circle_var = tk.BooleanVar(master=self.root, value=True)
         self._startup_history_minutes_var = tk.StringVar(master=self.root, value=self._DEFAULT_STARTUP_HISTORY_MINUTES)
         self._load_save_settings()
         self.canvas = tk.Canvas(
@@ -253,6 +269,48 @@ class IsraelMap:
             self.process_events()
         return item_id
 
+    def draw_focus_circle(
+        self,
+        points: list[tuple[float, float]],
+        *,
+        outline_color: str,
+        width: int,
+        padding: float,
+        min_radius: float,
+        refresh: bool | None = None,
+    ) -> int:
+        # 1. Use a dedicated canvas item instead of painting into the bitmap so
+        #    removing the circle restores the exact underlying image and markers.
+        # 2. Store the source point set so zoom changes can reposition the same
+        #    transient circle without needing to recreate it.
+        if not points:
+            raise ValueError("Focus circle needs at least one point")
+        item_id = self.canvas.create_oval(
+            0,
+            0,
+            0,
+            0,
+            outline=outline_color,
+            width=width,
+            fill="",
+        )
+        self._focus_circle_items[item_id] = _FocusCircleCommand(
+            points=tuple((float(latitude), float(longitude)) for latitude, longitude in points),
+            outline_color=str(outline_color),
+            width=max(1, int(width)),
+            padding=max(0.0, float(padding)),
+            min_radius=max(1.0, float(min_radius)),
+        )
+        self._position_focus_circle_item(item_id, self._focus_circle_items[item_id])
+        if self._background_image_id is not None:
+            self.canvas.tag_raise(item_id, self._background_image_id)
+        self._raise_overlays()
+        if refresh is None:
+            refresh = self.auto_refresh
+        if refresh:
+            self.process_events()
+        return item_id
+
     def remove_marker(self, item_id: int, refresh: bool | None = None) -> bool:
         """Remove one previously drawn marker by canvas item id."""
         # 1. Ignore unknown ids so callers can safely expire markers that were
@@ -264,6 +322,22 @@ class IsraelMap:
 
         self._drawn_markers.pop(item_id, None)
         self._hidden_marker_ids.discard(item_id)
+        self.canvas.delete(item_id)
+        if refresh is None:
+            refresh = self.auto_refresh
+        if refresh:
+            self.process_events()
+        return True
+
+    def remove_focus_circle(self, item_id: int, refresh: bool | None = None) -> bool:
+        # 1. Keep transient focus-circle removal separate from marker removal so
+        #    marker bookkeeping stays simple and type-specific.
+        # 2. Deleting the canvas item is enough to restore the underlying map
+        #    pixels because the circle is a separate non-destructive overlay.
+        if item_id not in self._focus_circle_items:
+            return False
+
+        self._focus_circle_items.pop(item_id, None)
         self.canvas.delete(item_id)
         if refresh is None:
             refresh = self.auto_refresh
@@ -301,7 +375,10 @@ class IsraelMap:
         """Restore the canvas to the original image-only state."""
         for item_id in tuple(self._drawn_markers):
             self.canvas.delete(item_id)
+        for item_id in tuple(self._focus_circle_items):
+            self.canvas.delete(item_id)
         self._drawn_markers.clear()
+        self._focus_circle_items.clear()
         self._hidden_marker_ids.clear()
         self._locality_points = None
         self._apply_view("full")
@@ -397,15 +474,31 @@ class IsraelMap:
     def blink_on_appearing_enabled(self) -> bool:
         return self._blink_on_appearing_value()
 
+    def attention_duration_seconds(self) -> float:
+        # 1. Keep the shared attention-window conversion in one place so both
+        #    blinking and focus circles stay synchronized.
+        # 2. The UI stores whole seconds because that is easier to understand
+        #    than fractional values for short operator-attention effects.
+        try:
+            return float(self._parse_attention_duration_seconds(self._attention_duration_seconds_value()))
+        except Exception:
+            return float(self._parse_attention_duration_seconds(self._DEFAULT_ATTENTION_DURATION_SECONDS))
+
     def localized_auto_zoom_enabled(self) -> bool:
         return self._localized_auto_zoom_value()
+
+    def small_alert_focus_circle_enabled(self) -> bool:
+        return self._small_alert_focus_circle_value()
 
     def startup_history_replay_seconds(self) -> int:
         # 1. Keep the startup replay window conversion in one place so callers
         #    do not duplicate minutes-to-seconds math.
         # 2. The settings dialog stores minutes because that is friendlier for
         #    operators, while the runtime cutoff code works in seconds.
-        return self._parse_startup_history_minutes(self._startup_history_minutes_value()) * 60
+        try:
+            return self._parse_startup_history_minutes(self._startup_history_minutes_value()) * 60
+        except Exception:
+            return self._parse_startup_history_minutes(self._DEFAULT_STARTUP_HISTORY_MINUTES) * 60
 
     def refresh_localized_zoom(self) -> None:
         # 1. Recompute the preferred map view from the currently visible alert
@@ -505,9 +598,43 @@ class IsraelMap:
                 y + (marker.size * 0.30),
             )
 
+    def _position_focus_circle_item(self, item_id: int, focus_circle: _FocusCircleCommand) -> None:
+        view_points = [
+            self._latlon_to_xy(latitude, longitude)
+            for latitude, longitude in focus_circle.points
+        ]
+        if not view_points:
+            return
+        center_x = sum(point[0] for point in view_points) / len(view_points)
+        center_y = sum(point[1] for point in view_points) / len(view_points)
+        max_distance = 0.0
+        for point_x, point_y in view_points:
+            dx = point_x - center_x
+            dy = point_y - center_y
+            max_distance = max(max_distance, (dx * dx + dy * dy) ** 0.5)
+        radius = max(focus_circle.min_radius, max_distance + focus_circle.padding)
+        self.canvas.coords(
+            item_id,
+            center_x - radius,
+            center_y - radius,
+            center_x + radius,
+            center_y + radius,
+        )
+        self.canvas.itemconfigure(
+            item_id,
+            outline=focus_circle.outline_color,
+            width=focus_circle.width,
+        )
+
     def _reposition_drawn_markers(self) -> None:
         for item_id, marker in self._drawn_markers.items():
             self._position_marker_item(item_id, marker)
+
+    def _reposition_focus_circles(self) -> None:
+        for item_id, focus_circle in self._focus_circle_items.items():
+            self._position_focus_circle_item(item_id, focus_circle)
+            if self._background_image_id is not None:
+                self.canvas.tag_raise(item_id, self._background_image_id)
 
     def _build_view_specs(self, base_image: Image.Image) -> dict[str, _MapViewSpec]:
         content_width = base_image.width
@@ -631,6 +758,7 @@ class IsraelMap:
             self.canvas.itemconfigure(self._menu_window_id, width=self.width)
 
         self._reposition_drawn_markers()
+        self._reposition_focus_circles()
         self.root.update_idletasks()
         if self._watchdog_text_id is not None:
             self._layout_watchdog_panel(
@@ -1184,7 +1312,9 @@ class IsraelMap:
             self._focus_on_alert_value(),
             self._audible_alert_value(),
             self._blink_on_appearing_value(),
+            self._attention_duration_seconds_value(),
             self._localized_auto_zoom_value(),
+            self._small_alert_focus_circle_value(),
             self._startup_history_minutes_value(),
         )
 
@@ -1196,7 +1326,6 @@ class IsraelMap:
             body,
             text="Alert Notification",
             width=settings_panel_width,
-            height=126,
             bg="#f7f8f9",
             fg="#5a6168",
             bd=1,
@@ -1207,7 +1336,6 @@ class IsraelMap:
             labelanchor="nw",
         )
         notification_panel.pack(fill="x", pady=(12, 0))
-        notification_panel.pack_propagate(False)
 
         focus_checkbox = tk.Checkbutton(
             notification_panel,
@@ -1263,11 +1391,50 @@ class IsraelMap:
         )
         blink_checkbox.pack(fill="x", pady=(10, 0))
 
+        attention_duration_row = tk.Frame(notification_panel, bg="#f7f8f9")
+        attention_duration_row.pack(fill="x", pady=(10, 0))
+
+        attention_duration_label = tk.Label(
+            attention_duration_row,
+            text="Blink / Focus Duration",
+            anchor="w",
+            bg="#f7f8f9",
+            fg="#5a6168",
+            font=("TkDefaultFont", 9, "bold"),
+        )
+        attention_duration_label.pack(side="left")
+
+        attention_duration_entry = tk.Entry(
+            attention_duration_row,
+            textvariable=self._attention_duration_seconds_var,
+            width=6,
+            justify="right",
+            bd=0,
+            relief="flat",
+            highlightthickness=1,
+            highlightbackground="#c8cdd2",
+            highlightcolor="#9fa6ad",
+            bg="#ffffff",
+            fg=colors["button_active_fg"],
+            insertbackground=colors["button_active_fg"],
+            font=("TkDefaultFont", 10),
+        )
+        attention_duration_entry.pack(side="left", padx=(12, 0))
+
+        attention_duration_suffix = tk.Label(
+            attention_duration_row,
+            text="seconds",
+            anchor="w",
+            bg="#f7f8f9",
+            fg="#5a6168",
+            font=("TkDefaultFont", 10),
+        )
+        attention_duration_suffix.pack(side="left", padx=(8, 0))
+
         map_display_panel = tk.LabelFrame(
             body,
             text="Map Display",
             width=settings_panel_width,
-            height=68,
             bg="#f7f8f9",
             fg="#5a6168",
             bd=1,
@@ -1278,7 +1445,6 @@ class IsraelMap:
             labelanchor="nw",
         )
         map_display_panel.pack(fill="x", pady=(12, 0))
-        map_display_panel.pack_propagate(False)
 
         auto_zoom_checkbox = tk.Checkbutton(
             map_display_panel,
@@ -1297,6 +1463,24 @@ class IsraelMap:
             font=("TkDefaultFont", 10),
         )
         auto_zoom_checkbox.pack(fill="x")
+
+        small_alert_circle_checkbox = tk.Checkbutton(
+            map_display_panel,
+            text="Show Focus Circle for Small Alerts",
+            variable=self._small_alert_focus_circle_var,
+            anchor="w",
+            bg="#f7f8f9",
+            fg=colors["button_fg"],
+            activebackground="#f7f8f9",
+            activeforeground=colors["button_active_fg"],
+            selectcolor="#f1f3f5",
+            highlightthickness=0,
+            bd=0,
+            padx=0,
+            pady=0,
+            font=("TkDefaultFont", 10),
+        )
+        small_alert_circle_checkbox.pack(fill="x", pady=(10, 0))
 
         history_replay_panel = tk.LabelFrame(
             body,
@@ -1802,7 +1986,18 @@ class IsraelMap:
         self._modal_kind = None
         self._nearest_locality_text = None
         if modal_kind == "settings" and self._settings_dialog_snapshot is not None:
-            include_datetime, base_name, scale, focus_on_alert, audible_alert, blink_on_appearing, localized_auto_zoom, startup_history_minutes = self._settings_dialog_snapshot
+            (
+                include_datetime,
+                base_name,
+                scale,
+                focus_on_alert,
+                audible_alert,
+                blink_on_appearing,
+                attention_duration_seconds,
+                localized_auto_zoom,
+                small_alert_focus_circle,
+                startup_history_minutes,
+            ) = self._settings_dialog_snapshot
             self._apply_save_settings(
                 include_datetime=include_datetime,
                 base_name=base_name,
@@ -1810,7 +2005,9 @@ class IsraelMap:
                 focus_on_alert=focus_on_alert,
                 audible_alert=audible_alert,
                 blink_on_appearing=blink_on_appearing,
+                attention_duration_seconds=attention_duration_seconds,
                 localized_auto_zoom=localized_auto_zoom,
+                small_alert_focus_circle=small_alert_focus_circle,
                 startup_history_minutes=startup_history_minutes,
             )
         self._settings_dialog_snapshot = None
@@ -1844,7 +2041,9 @@ class IsraelMap:
             focus_on_alert=self._DEFAULT_FOCUS_ON_ALERT,
             audible_alert=self._DEFAULT_AUDIBLE_ALERT,
             blink_on_appearing=self._DEFAULT_BLINK_ON_APPEARING,
+            attention_duration_seconds=self._DEFAULT_ATTENTION_DURATION_SECONDS,
             localized_auto_zoom=self._DEFAULT_LOCALIZED_AUTO_ZOOM,
+            small_alert_focus_circle=self._DEFAULT_SMALL_ALERT_FOCUS_CIRCLE,
             startup_history_minutes=self._DEFAULT_STARTUP_HISTORY_MINUTES,
         )
 
@@ -1865,7 +2064,9 @@ class IsraelMap:
             focus_on_alert=loaded.get("focus_on_alert", self._DEFAULT_FOCUS_ON_ALERT),
             audible_alert=loaded.get("audible_alert", self._DEFAULT_AUDIBLE_ALERT),
             blink_on_appearing=loaded.get("blink_on_appearing", self._DEFAULT_BLINK_ON_APPEARING),
+            attention_duration_seconds=str(loaded.get("attention_duration_seconds", self._DEFAULT_ATTENTION_DURATION_SECONDS)),
             localized_auto_zoom=loaded.get("localized_auto_zoom", self._DEFAULT_LOCALIZED_AUTO_ZOOM),
+            small_alert_focus_circle=loaded.get("small_alert_focus_circle", self._DEFAULT_SMALL_ALERT_FOCUS_CIRCLE),
             startup_history_minutes=str(loaded.get("startup_history_minutes", self._DEFAULT_STARTUP_HISTORY_MINUTES)),
         )
 
@@ -1894,6 +2095,31 @@ class IsraelMap:
     def _render_current_map_image(self) -> Image.Image:
         image = self._background_image.copy()
         draw = ImageDraw.Draw(image)
+        for focus_circle in self._focus_circle_items.values():
+            view_points = [
+                self._latlon_to_xy(latitude, longitude)
+                for latitude, longitude in focus_circle.points
+            ]
+            if not view_points:
+                continue
+            center_x = sum(point[0] for point in view_points) / len(view_points)
+            center_y = sum(point[1] for point in view_points) / len(view_points)
+            max_distance = 0.0
+            for point_x, point_y in view_points:
+                dx = point_x - center_x
+                dy = point_y - center_y
+                max_distance = max(max_distance, (dx * dx + dy * dy) ** 0.5)
+            radius = max(focus_circle.min_radius, max_distance + focus_circle.padding)
+            draw.ellipse(
+                (
+                    center_x - radius,
+                    center_y - radius,
+                    center_x + radius,
+                    center_y + radius,
+                ),
+                outline=focus_circle.outline_color,
+                width=focus_circle.width,
+            )
         for item_id, marker in self._drawn_markers.items():
             x, y = self._latlon_to_xy(marker.latitude, marker.longitude)
             color = self._resolve_draw_color(marker.color)
@@ -1944,11 +2170,12 @@ class IsraelMap:
         #    preferences cannot drift away from what the save path accepts.
         # 2. Validate both the filename base and the numeric scale because those
         #    are the two save-related fields that can make saving fail later.
-        # 3. Validate the startup replay window here too so settings persistence
-        #    rejects invalid values before they become the new default.
+        # 3. Validate the shared attention duration and startup replay window so
+        #    settings persistence rejects invalid values before they become defaults.
         if not self._save_base_name_value().strip():
             raise ValueError("Base Name is empty")
         self._parse_scale_percent(self._save_scale_value())
+        self._parse_attention_duration_seconds(self._attention_duration_seconds_value())
         self._parse_startup_history_minutes(self._startup_history_minutes_value())
 
     def _build_settings_text(self) -> str:
@@ -1956,7 +2183,9 @@ class IsraelMap:
         focus_on_alert = "true" if self._focus_on_alert_value() else "false"
         audible_alert = "true" if self._audible_alert_value() else "false"
         blink_on_appearing = "true" if self._blink_on_appearing_value() else "false"
+        attention_duration_seconds = self._parse_attention_duration_seconds(self._attention_duration_seconds_value())
         localized_auto_zoom = "true" if self._localized_auto_zoom_value() else "false"
+        small_alert_focus_circle = "true" if self._small_alert_focus_circle_value() else "false"
         startup_history_minutes = self._parse_startup_history_minutes(self._startup_history_minutes_value())
         base_name = json.dumps(self._save_base_name_value(), ensure_ascii=False)
         scale_percent = json.dumps(self._save_scale_value())
@@ -1965,7 +2194,9 @@ class IsraelMap:
             f"focus_on_alert: {focus_on_alert}\n"
             f"audible_alert: {audible_alert}\n"
             f"blink_on_appearing: {blink_on_appearing}\n"
+            f"attention_duration_seconds: {attention_duration_seconds}\n"
             f"localized_auto_zoom: {localized_auto_zoom}\n"
+            f"small_alert_focus_circle: {small_alert_focus_circle}\n"
             f"startup_history_minutes: {startup_history_minutes}\n"
             f"base_name: {base_name}\n"
             f"scale_percent: {scale_percent}\n"
@@ -1983,11 +2214,18 @@ class IsraelMap:
 
             normalized_key = key.strip()
             raw_value = value.strip()
-            if normalized_key in {"include_datetime", "focus_on_alert", "audible_alert", "blink_on_appearing", "localized_auto_zoom"}:
+            if normalized_key in {
+                "include_datetime",
+                "focus_on_alert",
+                "audible_alert",
+                "blink_on_appearing",
+                "localized_auto_zoom",
+                "small_alert_focus_circle",
+            }:
                 settings[normalized_key] = raw_value.casefold() in {"true", "yes", "on", "1"}
             elif normalized_key in {"base_name", "scale_percent"}:
                 settings[normalized_key] = self._parse_settings_string(raw_value)
-            elif normalized_key == "startup_history_minutes":
+            elif normalized_key in {"attention_duration_seconds", "startup_history_minutes"}:
                 settings[normalized_key] = self._parse_settings_int(raw_value)
         return settings
 
@@ -2010,7 +2248,9 @@ class IsraelMap:
         focus_on_alert: bool,
         audible_alert: bool,
         blink_on_appearing: bool,
+        attention_duration_seconds: str,
         localized_auto_zoom: bool,
+        small_alert_focus_circle: bool,
         startup_history_minutes: str,
     ) -> None:
         if self._save_include_datetime_var is not None:
@@ -2025,8 +2265,12 @@ class IsraelMap:
             self._audible_alert_var.set(bool(audible_alert))
         if self._blink_on_appearing_var is not None:
             self._blink_on_appearing_var.set(bool(blink_on_appearing))
+        if self._attention_duration_seconds_var is not None:
+            self._attention_duration_seconds_var.set(str(attention_duration_seconds))
         if self._localized_auto_zoom_var is not None:
             self._localized_auto_zoom_var.set(bool(localized_auto_zoom))
+        if self._small_alert_focus_circle_var is not None:
+            self._small_alert_focus_circle_var.set(bool(small_alert_focus_circle))
         if self._startup_history_minutes_var is not None:
             self._startup_history_minutes_var.set(str(startup_history_minutes))
 
@@ -2048,8 +2292,31 @@ class IsraelMap:
     def _blink_on_appearing_value(self) -> bool:
         return bool(self._blink_on_appearing_var.get()) if self._blink_on_appearing_var is not None else self._DEFAULT_BLINK_ON_APPEARING
 
+    def _attention_duration_seconds_value(self) -> str:
+        return (
+            self._attention_duration_seconds_var.get()
+            if self._attention_duration_seconds_var is not None
+            else self._DEFAULT_ATTENTION_DURATION_SECONDS
+        )
+
+    def _parse_attention_duration_seconds(self, seconds_text: str) -> int:
+        # 1. Require a positive whole number because the current UI exposes the
+        #    duration in seconds, not fractions of a second.
+        # 2. One shared parser keeps blinking and focus-circle timing rules identical.
+        attention_duration_seconds = int(seconds_text.strip())
+        if attention_duration_seconds <= 0:
+            raise ValueError("Blink / focus duration must be greater than zero")
+        return attention_duration_seconds
+
     def _localized_auto_zoom_value(self) -> bool:
         return bool(self._localized_auto_zoom_var.get()) if self._localized_auto_zoom_var is not None else self._DEFAULT_LOCALIZED_AUTO_ZOOM
+
+    def _small_alert_focus_circle_value(self) -> bool:
+        return (
+            bool(self._small_alert_focus_circle_var.get())
+            if self._small_alert_focus_circle_var is not None
+            else self._DEFAULT_SMALL_ALERT_FOCUS_CIRCLE
+        )
 
     def _startup_history_minutes_value(self) -> str:
         return (

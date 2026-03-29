@@ -8,7 +8,7 @@ from time import monotonic
 from israel_map import IsraelMap
 
 
-BLINK_DURATION_SECONDS = 6.0
+DEFAULT_BLINK_DURATION_SECONDS = 6.0
 
 
 @dataclass
@@ -20,6 +20,14 @@ class _BlinkState:
 class AlertBlinkManager:
     def __init__(self) -> None:
         self._markers: dict[int, _BlinkState] = {}
+        self._duration_seconds = DEFAULT_BLINK_DURATION_SECONDS
+
+    def set_duration(self, duration_seconds: float) -> None:
+        # 1. Keep the duration configurable at runtime so the Settings dialog
+        #    can change both blinking and related attention effects immediately.
+        # 2. Clamp to a tiny positive minimum so transient timing logic never
+        #    ends up dividing by or comparing against a non-positive duration.
+        self._duration_seconds = max(0.1, float(duration_seconds))
 
     def remember_markers(self, marker_ids: list[int], *, started_at: float | None = None) -> None:
         # 1. Start each new marker in the visible state so the first blink phase
@@ -35,13 +43,14 @@ class AlertBlinkManager:
     def update(self, map_view: IsraelMap, *, now: float | None = None) -> int:
         # 1. Toggle marker visibility from the main loop so blinking stays on
         #    the Tk thread and does not need a separate worker.
-        # 2. After 6 seconds, force the marker visible and stop tracking it.
+        # 2. After the configured duration, force the marker visible and stop
+        #    tracking it.
         anchor = monotonic() if now is None else now
         changed_count = 0
         finished_ids: list[int] = []
         for item_id, state in list(self._markers.items()):
             elapsed = anchor - state.started_at
-            if elapsed >= BLINK_DURATION_SECONDS:
+            if elapsed >= self._duration_seconds:
                 if not map_view.set_marker_visible(item_id, True):
                     finished_ids.append(item_id)
                     continue

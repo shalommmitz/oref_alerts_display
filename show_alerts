@@ -12,6 +12,7 @@ import yaml
 import utils
 from alert_blink import AlertBlinkManager
 from alert_audio import AudioAlertPlayer
+from alert_focus_circle import AlertFocusCircleManager
 from alert_expiry import AlertExpiryManager
 from alert_fetcher import AlertFetcher
 from alert_history import AlertHistoryClient
@@ -27,6 +28,7 @@ REQUEST_TIMEOUT = (3.05, 5)
 POLL_INTERVAL_SECONDS = 10
 NOTIFICATION_COOLDOWN_SECONDS = 10
 MAX_KNOWN_ALERTS = 2000
+SMALL_ALERT_FOCUS_CIRCLE_LIMIT = 6
 URL_ALERTS = os.environ.get(
     "OREF_ALERTS_URL",
     "https://www.oref.org.il/warningMessages/alert/Alerts.json",
@@ -138,13 +140,13 @@ def handle_alert(
     map_view: IsraelMap,
     expiry_manager: AlertExpiryManager,
     marker_registry: AlertMarkerRegistry,
-) -> tuple[int, list[int]]:
+) -> tuple[int, list[int], list[tuple[float, float]]]:
     # 1. Skip alerts that were already processed, whether they came from live polling
     #    or from the history replay path.
     # 2. Return only the newly added or state-changed marker ids for blinking,
     #    while still drawing the full alert batch and preserving expiry logic.
     if alert.key in known_lookup:
-        return biggest_alert_size, []
+        return biggest_alert_size, [], []
 
     biggest_alert_size = persist_alert_artifacts(
         alert,
@@ -154,9 +156,9 @@ def handle_alert(
     log("Alert contents:" + str(alert.raw))
     remember_alert(alert.key, known_order, known_lookup)
     print(len(alert_text), alert_text)
-    marker_ids, changed_marker_ids = draw_alert(map_view, coords, alert, log, marker_registry)
-    expiry_manager.remember_drawn_alert(alert, marker_ids)
-    return biggest_alert_size, changed_marker_ids
+    draw_result = draw_alert(map_view, coords, alert, log, marker_registry)
+    expiry_manager.remember_drawn_alert(alert, draw_result.marker_ids)
+    return biggest_alert_size, draw_result.changed_marker_ids, draw_result.resolved_points
 
 
 def main() -> None:
@@ -175,6 +177,7 @@ def main() -> None:
     known_lookup: set[str] = set()
     history_client = AlertHistoryClient(URL_HISTORY, REQUEST_TIMEOUT)
     blink_manager = AlertBlinkManager()
+    focus_circle_manager = AlertFocusCircleManager()
     expiry_manager = AlertExpiryManager()
     marker_registry = AlertMarkerRegistry()
     watchdog = WatchdogMonitor(
@@ -206,8 +209,24 @@ def main() -> None:
         fetcher.start()
 
     try:
+        def update_attention_effects() -> None:
+            # 1. Keep the blink and focus-circle duration synchronized because
+            #    both are controlled by the same Settings entry.
+            # 2. Clearing disabled effects immediately prevents hidden markers
+            #    or stale circles from lingering after the operator opts out.
+            attention_duration_seconds = map_view.attention_duration_seconds()
+            blink_manager.set_duration(attention_duration_seconds)
+            focus_circle_manager.set_duration(attention_duration_seconds)
+            if map_view.blink_on_appearing_enabled():
+                blink_manager.update(map_view)
+            else:
+                blink_manager.clear(map_view)
+            if map_view.small_alert_focus_circle_enabled():
+                focus_circle_manager.update(map_view)
+            else:
+                focus_circle_manager.clear(map_view)
+
         while map_view.is_open():
-            blink_enabled = map_view.blink_on_appearing_enabled()
             watchdog.note_ui_heartbeat()
             watchdog_snapshot = watchdog.snapshot()
             watchdog_state = (watchdog_snapshot.level, watchdog_snapshot.reason_code)
@@ -224,10 +243,7 @@ def main() -> None:
             )
             # 3. Let time-based cleanup run continuously, even while the app is idle
             #    or the network is temporarily unavailable.
-            if blink_enabled:
-                blink_manager.update(map_view)
-            else:
-                blink_manager.clear(map_view)
+            update_attention_effects()
             expiry_manager.expire_due_markers(map_view, log_fn=log)
             alerts_to_process: list[tuple[object, str, str]] = []
 
@@ -246,7 +262,7 @@ def main() -> None:
                     if not utils.sleep_with_ui(
                         map_view,
                         0.1,
-                        on_tick=lambda: blink_manager.update(map_view) if map_view.blink_on_appearing_enabled() else blink_manager.clear(map_view),
+                        on_tick=update_attention_effects,
                     ):
                         break
                     continue
@@ -302,10 +318,11 @@ def main() -> None:
 
             should_notify_operator = False
             should_reassess_zoom = False
+            pending_focus_circle_points: list[list[tuple[float, float]]] = []
             notification_trigger_descriptions: list[str] = []
             for alert, alert_text, alert_source in alerts_to_process:
                 is_new_alert = alert.key not in known_lookup
-                biggest_alert_size, blink_marker_ids = handle_alert(
+                biggest_alert_size, blink_marker_ids, resolved_points = handle_alert(
                     alert,
                     alert_text=alert_text,
                     base_dir=BASE_DIR,
@@ -317,8 +334,20 @@ def main() -> None:
                     expiry_manager=expiry_manager,
                     marker_registry=marker_registry,
                 )
-                if blink_enabled and is_new_alert and alert_source != "startup_replay":
+                if (
+                    map_view.blink_on_appearing_enabled()
+                    and is_new_alert
+                    and alert_source != "startup_replay"
+                ):
                     blink_manager.remember_markers(blink_marker_ids)
+                if (
+                    map_view.small_alert_focus_circle_enabled()
+                    and is_new_alert
+                    and alert_source != "startup_replay"
+                    and len(alert.data) <= SMALL_ALERT_FOCUS_CIRCLE_LIMIT
+                    and resolved_points
+                ):
+                    pending_focus_circle_points.append(resolved_points)
                 if is_new_alert and alert_source != "startup_replay":
                     should_notify_operator = True
                     notification_trigger_descriptions.append(
@@ -329,6 +358,9 @@ def main() -> None:
 
             if should_reassess_zoom:
                 map_view.refresh_localized_zoom()
+            if pending_focus_circle_points:
+                for focus_circle_points in pending_focus_circle_points:
+                    focus_circle_manager.remember_points(map_view, focus_circle_points)
 
             if should_notify_operator:
                 # 1. Startup replay is intentionally excluded so the window does
@@ -366,7 +398,7 @@ def main() -> None:
                 not utils.sleep_with_ui(
                     map_view,
                     POLL_INTERVAL_SECONDS,
-                    on_tick=lambda: blink_manager.update(map_view) if map_view.blink_on_appearing_enabled() else blink_manager.clear(map_view),
+                    on_tick=update_attention_effects,
                 )
             ):
                 break
