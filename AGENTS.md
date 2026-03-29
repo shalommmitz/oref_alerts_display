@@ -256,9 +256,10 @@ Current menu structure when `show_controls=True`:
 
 Current interactive click behavior:
 
-- clicking inside the image opens a modal with the nearest settlement name and coordinates
-- the modal provides `Close` and `Copy and Close`
-- the settlement-name field is selectable for name-only copy and prefers `python-bidi` for Hebrew RTL display
+- clicking inside the image shows the nearest settlement name and coordinates in a compact upper-left overlay
+- the overlay auto-hides after one minute, and a new click replaces it and restarts the timer
+- the coordinates field is selectable for copy, and a `Copy` button copies the coordinates directly
+- the locality-name display prefers `python-bidi` for Hebrew RTL display
 
 Current Settings dialog sections:
 

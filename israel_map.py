@@ -139,6 +139,9 @@ class IsraelMap:
     _DEFAULT_LOCALIZED_AUTO_ZOOM = False
     _DEFAULT_SMALL_ALERT_FOCUS_CIRCLE = True
     _DEFAULT_STARTUP_HISTORY_MINUTES = "3"
+    _LOCALITY_INFO_HIDE_MS = 60_000
+    _LOCALITY_INFO_EDGE_MARGIN = 8
+    _LOCALITY_INFO_COPY_BUTTON_WIDTH = 5
     _STATUS_EDGE_MARGIN = 8
     _STATUS_STACK_GAP = 6
     _STATUS_PANEL_Y_OFFSET = 14
@@ -176,6 +179,12 @@ class IsraelMap:
         self._modal_dialog: tk.Toplevel | None = None
         self._modal_kind: str | None = None
         self._nearest_locality_text: str | None = None
+        self._nearest_locality_overlay_window_id: int | None = None
+        self._nearest_locality_overlay_frame: tk.Frame | None = None
+        self._nearest_locality_overlay_name_var: tk.StringVar | None = None
+        self._nearest_locality_overlay_coords_var: tk.StringVar | None = None
+        self._nearest_locality_overlay_value_entry: tk.Entry | None = None
+        self._nearest_locality_overlay_hide_after_id: str | None = None
         self._locality_points: list[_LocalityPoint] | None = None
         self._settings_dialog_snapshot: tuple[bool, str, str, bool, bool, bool, str, bool, bool, str] | None = None
         self._log_time_background_id: int | None = None
@@ -228,6 +237,8 @@ class IsraelMap:
         self._localized_auto_zoom_var = tk.BooleanVar(master=self.root, value=False)
         self._small_alert_focus_circle_var = tk.BooleanVar(master=self.root, value=True)
         self._startup_history_minutes_var = tk.StringVar(master=self.root, value=self._DEFAULT_STARTUP_HISTORY_MINUTES)
+        self._nearest_locality_overlay_name_var = tk.StringVar(master=self.root, value="")
+        self._nearest_locality_overlay_coords_var = tk.StringVar(master=self.root, value="")
         self._load_save_settings()
         self.canvas = tk.Canvas(
             self.root,
@@ -427,6 +438,7 @@ class IsraelMap:
 
         try:
             self.root.withdraw()
+            self._cancel_nearest_locality_overlay_timer()
             self.root.after_idle(self._finalize_close)
         except tk.TclError:
             self._finalize_close()
@@ -905,7 +917,7 @@ class IsraelMap:
         nearest = self._find_nearest_locality(event.x, event.y)
         if nearest is None:
             return
-        self._open_nearest_locality_dialog(nearest)
+        self._show_nearest_locality_overlay(nearest)
 
     def _find_nearest_locality(self, x: float, y: float) -> _LocalityPoint | None:
         # 1. Build the projected locality cache lazily so startup stays light
@@ -948,139 +960,108 @@ class IsraelMap:
         self._locality_points = locality_points
         return locality_points
 
-    def _open_nearest_locality_dialog(self, locality: _LocalityPoint) -> None:
-        # 1. Keep the copied text identical to the displayed text so the operator
-        #    can trust that "Copy and Close" exports exactly what was shown.
-        # 2. Use a modal dialog because the user explicitly asked for that flow
-        #    instead of an inline status overlay or tooltip.
+    def _show_nearest_locality_overlay(self, locality: _LocalityPoint) -> None:
+        # 1. Replace the previous click result in place so the operator can scan
+        #    several localities quickly without dismissing modal windows.
+        # 2. Keep the full copied text stable and explicit even though the
+        #    visual overlay itself is intentionally compact.
         self._nearest_locality_text = (
             f"Settlement: {locality.name}\n"
             f"Latitude: {locality.latitude:.6f}\n"
             f"Longitude: {locality.longitude:.6f}"
         )
-        dialog, body = self._open_modal_shell("Nearest Settlement", kind="nearest_locality")
-
-        title = tk.Label(
-            body,
-            text="Nearest Settlement",
-            anchor="w",
-            bg="#eef0f2",
-            fg="#2f3841",
-            font=("TkDefaultFont", 12, "bold"),
+        if self._nearest_locality_overlay_name_var is not None:
+            self._nearest_locality_overlay_name_var.set(self._to_visual_rtl_text(locality.name))
+        if self._nearest_locality_overlay_coords_var is not None:
+            self._nearest_locality_overlay_coords_var.set(
+                f"{locality.latitude:.6f}, {locality.longitude:.6f}"
+            )
+        self._ensure_nearest_locality_overlay()
+        self._layout_nearest_locality_overlay()
+        if self._nearest_locality_overlay_window_id is not None:
+            self.canvas.itemconfigure(self._nearest_locality_overlay_window_id, state="normal")
+        self._raise_overlays()
+        self._cancel_nearest_locality_overlay_timer()
+        self._nearest_locality_overlay_hide_after_id = self.root.after(
+            self._LOCALITY_INFO_HIDE_MS,
+            self._hide_nearest_locality_overlay,
         )
-        title.pack(fill="x")
 
-        card = tk.Frame(
-            body,
+    def _ensure_nearest_locality_overlay(self) -> None:
+        if self._nearest_locality_overlay_frame is not None and self._nearest_locality_overlay_window_id is not None:
+            return
+
+        panel = tk.Frame(
+            self.canvas,
             bg="#f7f8f9",
             highlightthickness=1,
             highlightbackground="#c8cdd2",
-            padx=14,
-            pady=12,
+            bd=0,
+            padx=8,
+            pady=6,
         )
-        card.pack(fill="both", expand=True, pady=(12, 0))
 
         name_label = tk.Label(
-            card,
-            text="Settlement",
-            anchor="w",
+            panel,
+            textvariable=self._nearest_locality_overlay_name_var,
+            anchor="e",
+            justify="right",
             bg="#f7f8f9",
-            fg="#5a6168",
-            font=("TkDefaultFont", 10, "bold"),
+            fg="#20262c",
+            font=("TkDefaultFont", 11, "bold"),
         )
         name_label.pack(fill="x")
 
-        # 1. Tk text-entry widgets do not reliably render logical Hebrew text in
-        #    the correct visual order, so prepare an explicit visual display
-        #    string for the field.
-        # 2. Keep the original logical Hebrew text separately so copy actions
-        #    still place the correct locality name on the clipboard.
-        display_name = self._to_visual_rtl_text(locality.name)
-        name_value_var = tk.StringVar(value=display_name)
-        name_value = tk.Entry(
-            card,
-            textvariable=name_value_var,
-            justify="right",
+        coords_entry = tk.Entry(
+            panel,
+            textvariable=self._nearest_locality_overlay_coords_var,
+            justify="left",
             state="readonly",
+            width=22,
             readonlybackground="#ffffff",
             bd=0,
             relief="flat",
             highlightthickness=1,
-            highlightbackground="#c8cdd2",
-            highlightcolor="#c8cdd2",
-            fg="#20262c",
-            font=("TkDefaultFont", 13, "bold"),
+            highlightbackground="#d4d9de",
+            highlightcolor="#d4d9de",
+            fg="#4b545c",
+            font=("TkDefaultFont", 9),
         )
-        name_value.pack(fill="x", pady=(4, 12), ipady=6)
-        name_value.bind(
+        coords_entry.pack(fill="x", pady=(4, 0), ipady=2)
+        coords_entry.bind(
             "<Button-1>",
-            lambda _event: self._select_all_entry_text(name_value),
+            lambda _event: self._select_all_entry_text(coords_entry),
             add="+",
         )
-        name_value.bind(
+        coords_entry.bind(
             "<FocusIn>",
-            lambda _event: self._select_all_entry_text(name_value),
+            lambda _event: self._select_all_entry_text(coords_entry),
             add="+",
         )
-        name_value.bind(
+        coords_entry.bind(
             "<Control-c>",
-            lambda _event: self._copy_text_to_clipboard(locality.name),
+            lambda _event: self._copy_nearest_locality_coords_only(),
             add="+",
         )
-        name_value.bind(
+        coords_entry.bind(
             "<Command-c>",
-            lambda _event: self._copy_text_to_clipboard(locality.name),
+            lambda _event: self._copy_nearest_locality_coords_only(),
             add="+",
         )
-        name_value.bind(
+        coords_entry.bind(
             "<<Copy>>",
-            lambda _event: self._copy_text_to_clipboard(locality.name),
+            lambda _event: self._copy_nearest_locality_coords_only(),
             add="+",
         )
-
-        coords_text = (
-            f"Latitude: {locality.latitude:.6f}\n"
-            f"Longitude: {locality.longitude:.6f}"
-        )
-        details = tk.Label(
-            card,
-            text=coords_text,
-            anchor="w",
-            justify="left",
-            bg="#f7f8f9",
-            fg="#394047",
-            font=("TkDefaultFont", 11),
-        )
-        details.pack(fill="x")
-
-        button_row = tk.Frame(body, bg="#eef0f2")
-        button_row.pack(fill="x", pady=(14, 0))
-
-        close_button = tk.Button(
-            button_row,
-            text="Close",
-            command=self._close_modal_dialog,
-            width=11,
-            bd=0,
-            relief="flat",
-            font=("TkDefaultFont", 10, "bold"),
-            bg="#d6dade",
-            fg="#394047",
-            activebackground="#e0e4e7",
-            activeforeground="#20262c",
-            highlightthickness=0,
-            takefocus=False,
-        )
-        close_button.pack(side="right")
 
         copy_button = tk.Button(
-            button_row,
-            text="Copy and Close",
-            command=self._copy_nearest_locality_and_close,
-            width=14,
+            panel,
+            text="Copy",
+            command=self._copy_nearest_locality_coords_only,
+            width=self._LOCALITY_INFO_COPY_BUTTON_WIDTH,
             bd=0,
             relief="flat",
-            font=("TkDefaultFont", 10, "bold"),
+            font=("TkDefaultFont", 9, "bold"),
             bg=self._CONTROL_COLORS["button_bg"],
             fg=self._CONTROL_COLORS["button_fg"],
             activebackground=self._CONTROL_COLORS["button_active_bg"],
@@ -1088,16 +1069,63 @@ class IsraelMap:
             highlightthickness=0,
             takefocus=False,
         )
-        copy_button.pack(side="right", padx=(0, 8))
+        copy_button.pack(anchor="w", pady=(4, 0))
 
-        self._finalize_modal_dialog(dialog, focus_widget=copy_button)
+        self._nearest_locality_overlay_frame = panel
+        self._nearest_locality_overlay_value_entry = coords_entry
+        self._nearest_locality_overlay_window_id = self.canvas.create_window(
+            0,
+            0,
+            anchor="nw",
+            window=panel,
+            state="hidden",
+        )
 
-    def _copy_nearest_locality_and_close(self) -> None:
-        if self._nearest_locality_text is None:
-            self._close_modal_dialog()
+    def _layout_nearest_locality_overlay(self) -> None:
+        if self._nearest_locality_overlay_window_id is None:
             return
-        self._copy_text_to_clipboard(self._nearest_locality_text)
-        self._close_modal_dialog()
+        panel_left = self._LOCALITY_INFO_EDGE_MARGIN
+        panel_top = self._LOCALITY_INFO_EDGE_MARGIN
+        if self._menu_window_id is not None:
+            menu_bbox = self.canvas.bbox(self._menu_window_id)
+            if menu_bbox is not None:
+                panel_top = menu_bbox[3] + self._LOCALITY_INFO_EDGE_MARGIN + 2
+        self.canvas.coords(
+            self._nearest_locality_overlay_window_id,
+            panel_left,
+            panel_top,
+        )
+
+    def _hide_nearest_locality_overlay(self) -> None:
+        self._nearest_locality_overlay_hide_after_id = None
+        if self._nearest_locality_overlay_window_id is not None:
+            self.canvas.itemconfigure(self._nearest_locality_overlay_window_id, state="hidden")
+
+    def _cancel_nearest_locality_overlay_timer(self) -> None:
+        if self._nearest_locality_overlay_hide_after_id is None:
+            return
+        try:
+            self.root.after_cancel(self._nearest_locality_overlay_hide_after_id)
+        except tk.TclError:
+            pass
+        self._nearest_locality_overlay_hide_after_id = None
+
+    def _copy_nearest_locality_text(self) -> str:
+        if self._nearest_locality_text is None:
+            return "break"
+        return self._copy_text_to_clipboard(self._nearest_locality_text)
+
+    def _copy_nearest_locality_coords_only(self) -> str:
+        if self._nearest_locality_text is None:
+            return "break"
+        lines = self._nearest_locality_text.splitlines()
+        if len(lines) < 3:
+            return "break"
+        latitude_text = lines[1].partition(": ")[2]
+        longitude_text = lines[2].partition(": ")[2]
+        if not latitude_text or not longitude_text:
+            return "break"
+        return self._copy_text_to_clipboard(f"{latitude_text}, {longitude_text}")
 
     def _copy_text_to_clipboard(self, text: str) -> str:
         # 1. Keep clipboard writes centralized so the nearest-settlement dialog
@@ -1133,6 +1161,9 @@ class IsraelMap:
         return text[::-1]
 
     def _raise_overlays(self) -> None:
+        if self._nearest_locality_overlay_window_id is not None:
+            self._layout_nearest_locality_overlay()
+            self.canvas.tag_raise(self._nearest_locality_overlay_window_id)
         if self._log_time_background_id is not None:
             self.canvas.tag_raise(self._log_time_background_id)
         if self._log_time_text_id is not None:
@@ -1790,8 +1821,9 @@ class IsraelMap:
         title.pack(fill="x")
 
         usage_lines = (
-            "Click inside the map to open the nearest settlement name and coordinates.",
-            "Use Copy and Close in that window if you want the settlement details on the clipboard.",
+            "Click inside the map to show the nearest settlement name and coordinates in the upper-left corner.",
+            "That click info auto-hides after one minute, and a new click replaces it and restarts the timer.",
+            "The coordinates field is selectable for copy, and the Copy button copies the coordinates directly.",
         )
         for line in usage_lines:
             label = tk.Label(
@@ -1993,7 +2025,6 @@ class IsraelMap:
         self._modal_dialog = None
         modal_kind = self._modal_kind
         self._modal_kind = None
-        self._nearest_locality_text = None
         if modal_kind == "settings" and self._settings_dialog_snapshot is not None:
             (
                 include_datetime,

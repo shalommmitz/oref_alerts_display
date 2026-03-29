@@ -126,8 +126,9 @@ What happens:
 - If `Auto Zoom x2 for Localized Alerts` is enabled, the app precomputes three zoomed half-map views at launch and switches to one of them only when newly arrived non-gray alerts all fit in the same region.
 - Gray `Event Ended` markers do not trigger zoom reassessment, and automatic gray-marker expiry does not trigger it either.
 - Focus-jump and audible-alert notifications share a 10-second cooldown, so alert bursts do not repeatedly steal focus or replay sound.
-- Clicking inside the map image opens a modal showing the nearest settlement name and coordinates, with `Close` and `Copy and Close` actions.
-- The settlement-name field is selectable for name-only copy, and uses `python-bidi` for stronger Hebrew RTL rendering when available.
+- Clicking inside the map image shows the nearest settlement name and coordinates in a compact upper-left overlay.
+- That overlay auto-hides after one minute, and a new click replaces the displayed locality and restarts the timer.
+- The coordinates field is selectable for copy, and the `Copy` button copies the coordinates directly.
 - A compact lower-left watchdog shows a pulsing alive icon and `Online` or `Offline`.
 
 Current alert color mapping:
@@ -237,7 +238,7 @@ The runtime code expects that generated file to exist in the project directory.
 - When `show_controls=True`, `IsraelMap` creates an in-canvas menu strip that overlays the top of the image instead of increasing the window height.
 - The Settings dialog includes `Alert Notification`, `Map Display`, `History Replay`, and `Image Save Options`, and persists all four sections to `settings.yaml`.
 - The alert-notification, map-display, and replay settings persisted in `settings.yaml` now include `focus_on_alert`, `audible_alert`, `blink_on_appearing`, `attention_duration_seconds`, `small_alert_focus_circle`, and `startup_history_minutes`.
-- In interactive mode, clicking the image resolves the nearest locality from `locality_latitude_longitude.yaml` using the current map projection.
+- In interactive mode, clicking the image resolves the nearest locality from `locality_latitude_longitude.yaml` using the current map projection and shows it in a timed upper-left overlay.
 - Startup history replay does not trigger focus-jump or audio notifications, but live alerts and recovery replay alerts do.
 - Operator notifications use one shared 10-second cooldown across focus-jump and audio playback.
 - `IsraelMap.remove_marker()` removes a specific marker without affecting later markers drawn at the same locality.
