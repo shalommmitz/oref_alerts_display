@@ -166,6 +166,7 @@ class IsraelMap:
         self.padding = max(0, padding)
         self.bounds = _MapBounds()
         self._closed = False
+        self._reset_generation = 0
         self._drawn_markers: dict[int, _DrawCommand] = {}
         self._focus_circle_items: dict[int, _FocusCircleCommand] = {}
         self._hidden_marker_ids: set[int] = set()
@@ -380,6 +381,7 @@ class IsraelMap:
         self._drawn_markers.clear()
         self._focus_circle_items.clear()
         self._hidden_marker_ids.clear()
+        self._reset_generation += 1
         self._locality_points = None
         self._apply_view("full")
         if refresh is None:
@@ -489,6 +491,13 @@ class IsraelMap:
 
     def small_alert_focus_circle_enabled(self) -> bool:
         return self._small_alert_focus_circle_value()
+
+    def reset_generation(self) -> int:
+        # 1. Expose a monotonically increasing reset counter so the main loop
+        #    can detect manual clears and discard its own stale alert state.
+        # 2. A counter is simpler than callbacks here because `IsraelMap` is
+        #    reused outside `show_alerts` and should stay loosely coupled.
+        return self._reset_generation
 
     def startup_history_replay_seconds(self) -> int:
         # 1. Keep the startup replay window conversion in one place so callers

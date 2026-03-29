@@ -58,6 +58,7 @@ Main loop responsibilities:
 - compute replay timing on the explicit `Asia/Jerusalem` timezone basis
 - update the watchdog overlay with Online/Offline state and heartbeat information
 - de-duplicate alerts before drawing
+- reset alert-loop dedup/runtime state after a manual map clear so active alerts can repopulate and re-zoom on the next poll
 - save the last processed alert to `last_alert.yaml`
 - map each alerted locality to coordinates
 - choose a drawing color from alert category

@@ -116,6 +116,7 @@ What happens:
 - Expired markers are cleared incrementally so large expiry batches do not monopolize the UI thread.
 - The map window exposes a standard top menu inside the canvas: `File`, `Edit`, `Send to Back`, and `Help`.
 - `File` includes `Save`, `Settings`, and `Exit`; `Edit` includes `Clear`; `Send to Back` lowers the map window; `Help` includes `Usage`, `Color Legend`, and `About`.
+- `Edit -> Clear` resets both the visible map and the in-memory alert state, so the next live poll can redraw current alerts and reapply localized zoom if needed.
 - `Settings` stores image-save, alert-notification, and map-display preferences in `settings.yaml`.
 - `Settings` also stores the startup history replay window in minutes; the default is 3 minutes.
 - `Blink / Focus Duration` controls both the marker-blink duration and the small-alert focus-circle duration; the default is 6 seconds.
@@ -240,6 +241,7 @@ The runtime code expects that generated file to exist in the project directory.
 - Startup history replay does not trigger focus-jump or audio notifications, but live alerts and recovery replay alerts do.
 - Operator notifications use one shared 10-second cooldown across focus-jump and audio playback.
 - `IsraelMap.remove_marker()` removes a specific marker without affecting later markers drawn at the same locality.
+- Manual map clear resets the alert-loop dedup state too, so a still-active live alert can repopulate the map on the next poll.
 - `IsraelMap` precomputes full, top-half `2x`, middle-half `2x`, and bottom-half `2x` background views in memory at launch instead of writing derived images into the repository.
 - Marker blinking and small-alert focus circles are driven from the main Tk loop, not separate threads, so all transient canvas changes stay on the canvas-owning thread.
 - `localities.yaml` has priority over `cities.json` when generating the runtime locality lookup.

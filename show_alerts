@@ -156,9 +156,11 @@ def handle_alert(
     log("Alert contents:" + str(alert.raw))
     remember_alert(alert.key, known_order, known_lookup)
     try:
-        a = json.loads(alert_text)
+        a = yaml.safe_load(alert_text)
+        print()
         print(a["title"])
         print("  ", ", ".join(a["data"]))
+        print()
     except:
         pass
     draw_result = draw_alert(map_view, coords, alert, log, marker_registry)
@@ -195,6 +197,7 @@ def main() -> None:
     last_live_success_at: datetime | None = None
     last_watchdog_state: tuple[str, str] | None = None
     last_operator_notification_at: float | None = None
+    last_reset_generation = map_view.reset_generation()
 
     biggest_alert_size = 0
     biggest_alert_path = BASE_DIR / "biggest_alert.yaml"
@@ -232,6 +235,22 @@ def main() -> None:
                 focus_circle_manager.clear(map_view)
 
         while map_view.is_open():
+            current_reset_generation = map_view.reset_generation()
+            if current_reset_generation != last_reset_generation:
+                # 1. `Edit -> Clear` wipes the canvas immediately, but the main
+                #    loop also has to forget known alert ids and locality state
+                #    so the next live poll can repopulate and re-zoom correctly.
+                # 2. Clear the transient managers too so they do not keep stale
+                #    marker ids or pending circles from the pre-clear map state.
+                known_order.clear()
+                known_lookup.clear()
+                marker_registry.clear()
+                expiry_manager.clear()
+                blink_manager.clear(map_view)
+                focus_circle_manager.clear(map_view)
+                last_reset_generation = current_reset_generation
+                log("Map cleared: runtime alert state reset")
+
             watchdog.note_ui_heartbeat()
             watchdog_snapshot = watchdog.snapshot()
             watchdog_state = (watchdog_snapshot.level, watchdog_snapshot.reason_code)

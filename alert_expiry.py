@@ -26,6 +26,12 @@ class AlertExpiryManager:
     def __init__(self) -> None:
         self._pending: list[_PendingExpiry] = []
 
+    def clear(self) -> None:
+        # 1. Manual map clears should also discard pending expiry work so old
+        #    marker ids are not carried into the next alert cycle.
+        # 2. This keeps the expiry heap aligned with what is actually visible.
+        self._pending.clear()
+
     def remember_drawn_alert(
         self,
         alert: AlertEvent,

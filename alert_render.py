@@ -60,6 +60,14 @@ class AlertMarkerRegistry:
         self._marker_by_locality[locality_key] = item_id
         self._state_by_locality[locality_key] = state_key
 
+    def clear(self) -> None:
+        # 1. Drop all locality mappings after a manual map clear so the next
+        #    live poll can repopulate the map from scratch.
+        # 2. Keep this state reset explicit because the canvas and the alert
+        #    loop maintain related, but separate, pieces of runtime state.
+        self._marker_by_locality.clear()
+        self._state_by_locality.clear()
+
 
 def persist_alert_artifacts(
     alert: AlertEvent,
