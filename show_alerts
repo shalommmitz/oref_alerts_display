@@ -155,7 +155,12 @@ def handle_alert(
     )
     log("Alert contents:" + str(alert.raw))
     remember_alert(alert.key, known_order, known_lookup)
-    print(len(alert_text), alert_text)
+    try:
+        a = json.loads(alert_text)
+        print(a["title"])
+        print("  ", ", ".join(a["data"]))
+    except:
+        pass
     draw_result = draw_alert(map_view, coords, alert, log, marker_registry)
     expiry_manager.remember_drawn_alert(alert, draw_result.marker_ids)
     return biggest_alert_size, draw_result.changed_marker_ids, draw_result.resolved_points
