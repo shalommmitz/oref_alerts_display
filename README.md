@@ -112,6 +112,7 @@ What happens:
 - Newly drawn alerts blink for their configured attention duration with a 1-second on / 1-second off cadence, except for history alerts loaded at startup.
 - If a repeated alert keeps a locality in the same alert state, that locality does not restart blinking; only newly added or state-changed localities blink.
 - If a new non-startup alert has 6 or fewer localities and `Show Focus Circle for Small Alerts` is enabled, the app draws a pale-blue focus circle around that alert cluster for the same configured attention duration.
+- Same-state repeat alerts do not raise the window or draw a new focus circle unless at least one mapped locality actually changed alert state.
 - "Event ended" markers are automatically removed 10 minutes after their alert appearance time.
 - Expired markers are cleared incrementally so large expiry batches do not monopolize the UI thread.
 - The map window exposes a standard top menu inside the canvas: `File`, `Edit`, `Send to Back`, and `Help`.
@@ -120,11 +121,13 @@ What happens:
 - `Settings` stores image-save, alert-notification, and map-display preferences in `settings.yaml`.
 - `Settings` also stores the startup history replay window in minutes; the default is 3 minutes.
 - `Blink / Focus Duration` controls both the marker-blink duration and the small-alert focus-circle duration; the default is 6 seconds.
-- If `Bring Window to Front` is enabled, non-startup alerts raise the map window above other windows.
-- If `Play Audible Alert` is enabled, non-startup alerts play `ocean_4s.mp3`.
+- Clicking the map also uses that same attention duration for a transient green blink at the true mapped locality point.
+- If `Bring Window to Front` is enabled, non-startup alerts raise the map window above other windows only when at least one locality changes state on the map.
+- If `Play Audible Alert` is enabled, non-startup alerts play `ocean_4s.mp3` only when at least one locality changes state on the map.
 - `Blink New Alerts on Appearing` is enabled by default and can be turned off in Settings.
 - If `Auto Zoom x2 for Localized Alerts` is enabled, the app precomputes three zoomed half-map views at launch and switches to one of them only when newly arrived non-gray alerts all fit in the same region.
 - Gray `Event Ended` markers do not trigger zoom reassessment, and automatic gray-marker expiry does not trigger it either.
+- Clicking inside the map shows the nearest settlement in the upper-left corner and starts a green blink on that locality's exact mapped point; a new click replaces the text but does not cancel older click-highlights that are still blinking.
 - Focus-jump and audible-alert notifications share a 10-second cooldown, so alert bursts do not repeatedly steal focus or replay sound.
 - Clicking inside the map image shows the nearest settlement name and coordinates in a compact upper-left overlay.
 - That overlay auto-hides after one minute, and a new click replaces the displayed locality and restarts the timer.

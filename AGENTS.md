@@ -258,6 +258,8 @@ Current interactive click behavior:
 
 - clicking inside the image shows the nearest settlement name and coordinates in a compact upper-left overlay
 - the overlay auto-hides after one minute, and a new click replaces it and restarts the timer
+- clicking also starts a transient green blink on the exact mapped locality point for the configured attention duration
+- a new click does not cancel earlier click-highlights that are still blinking
 - the coordinates field is selectable for copy, and a `Copy` button copies the coordinates directly
 - the locality-name display prefers `python-bidi` for Hebrew RTL display
 
@@ -291,8 +293,8 @@ Current localized zoom behavior:
 
 Current alert-notification behavior:
 
-- `focus_on_alert` raises and focuses the map window for non-startup alerts
-- `audible_alert` plays `ocean_4s.mp3` for non-startup alerts
+- `focus_on_alert` raises and focuses the map window for non-startup alerts only when at least one mapped locality changes alert state
+- `audible_alert` plays `ocean_4s.mp3` for non-startup alerts only when at least one mapped locality changes alert state
 - `blink_on_appearing` controls whether newly drawn non-startup alerts blink, and defaults to enabled
 - `attention_duration_seconds` controls both blink duration and small-alert focus-circle duration, and defaults to 6 seconds
 - startup history replay does not trigger either notification
@@ -315,6 +317,8 @@ Current small-alert focus-circle behavior:
 - the focus circle lasts for the same configured attention duration used by blinking
 - the focus circle is opt-out through `small_alert_focus_circle`
 - gray `Event Ended` alerts are included in this feature
+- startup history replay alerts are excluded from this feature
+- same-state repeat alerts do not create a new focus circle
 - the circle is drawn as a separate overlay item, so removing it restores the exact underlying canvas content
 
 ### `align_map`

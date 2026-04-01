@@ -10,6 +10,7 @@ import tkinter as tk
 from datetime import datetime
 from dataclasses import dataclass
 from pathlib import Path
+from time import monotonic
 from typing import Callable
 
 from PIL import Image, ImageDraw
@@ -56,6 +57,18 @@ class _LocalityPoint:
     longitude: float
     x: float
     y: float
+
+
+@dataclass
+class _ClickHighlightState:
+    locality_name: str
+    latitude: float
+    longitude: float
+    color: str
+    shape: str
+    size: int
+    started_at: float
+    visible: bool
 
 
 @dataclass(frozen=True)
@@ -139,6 +152,10 @@ class IsraelMap:
     _DEFAULT_LOCALIZED_AUTO_ZOOM = False
     _DEFAULT_SMALL_ALERT_FOCUS_CIRCLE = True
     _DEFAULT_STARTUP_HISTORY_MINUTES = "3"
+    _CLICK_HIGHLIGHT_COLOR = "green"
+    _CLICK_HIGHLIGHT_SHAPE = "circle"
+    _CLICK_HIGHLIGHT_SIZE = 8
+    _CLICK_HIGHLIGHT_TICK_MS = 250
     _LOCALITY_INFO_HIDE_MS = 60_000
     _LOCALITY_INFO_EDGE_MARGIN = 8
     _LOCALITY_INFO_COPY_BUTTON_WIDTH = 5
@@ -172,6 +189,7 @@ class IsraelMap:
         self._reset_generation = 0
         self._drawn_markers: dict[int, _DrawCommand] = {}
         self._focus_circle_items: dict[int, _FocusCircleCommand] = {}
+        self._click_highlight_items: dict[int, _ClickHighlightState] = {}
         self._hidden_marker_ids: set[int] = set()
         self._background_image_id: int | None = None
         self._menu_frame: tk.Frame | None = None
@@ -185,6 +203,7 @@ class IsraelMap:
         self._nearest_locality_overlay_coords_var: tk.StringVar | None = None
         self._nearest_locality_overlay_value_entry: tk.Entry | None = None
         self._nearest_locality_overlay_hide_after_id: str | None = None
+        self._click_highlight_after_id: str | None = None
         self._locality_points: list[_LocalityPoint] | None = None
         self._settings_dialog_snapshot: tuple[bool, str, str, bool, bool, bool, str, bool, bool, str] | None = None
         self._log_time_background_id: int | None = None
@@ -383,15 +402,111 @@ class IsraelMap:
             self.process_events()
         return True
 
+    def _start_click_highlight(self, locality: _LocalityPoint) -> None:
+        # 1. Replace any older highlight for the same locality so clicking the
+        #    same place again cleanly restarts that locality's attention timer.
+        # 2. Keep highlights independent per locality so clicking a second
+        #    place while the first is still blinking leaves both active.
+        self._remove_click_highlights_for_locality(locality.name)
+        item_id = self._create_marker_item(
+            self._CLICK_HIGHLIGHT_SHAPE,
+            self._resolve_draw_color(self._CLICK_HIGHLIGHT_COLOR),
+        )
+        highlight = _ClickHighlightState(
+            locality_name=locality.name,
+            latitude=locality.latitude,
+            longitude=locality.longitude,
+            color=self._CLICK_HIGHLIGHT_COLOR,
+            shape=self._CLICK_HIGHLIGHT_SHAPE,
+            size=self._CLICK_HIGHLIGHT_SIZE,
+            started_at=monotonic(),
+            visible=True,
+        )
+        self._click_highlight_items[item_id] = highlight
+        self._position_click_highlight_item(item_id, highlight)
+        self.canvas.itemconfigure(item_id, state="normal")
+        self._raise_overlays()
+        self._ensure_click_highlight_timer()
+
+    def _remove_click_highlights_for_locality(self, locality_name: str) -> None:
+        highlight_ids = [
+            item_id
+            for item_id, highlight in self._click_highlight_items.items()
+            if highlight.locality_name == locality_name
+        ]
+        for item_id in highlight_ids:
+            self._remove_click_highlight(item_id)
+
+    def _remove_click_highlight(self, item_id: int) -> bool:
+        if item_id not in self._click_highlight_items:
+            return False
+        self._click_highlight_items.pop(item_id, None)
+        self.canvas.delete(item_id)
+        return True
+
+    def _ensure_click_highlight_timer(self) -> None:
+        if self._click_highlight_after_id is not None or self._closed or not self.root.winfo_exists():
+            return
+        try:
+            self._click_highlight_after_id = self.root.after(
+                self._CLICK_HIGHLIGHT_TICK_MS,
+                self._update_click_highlights,
+            )
+        except tk.TclError:
+            self._click_highlight_after_id = None
+
+    def _cancel_click_highlight_timer(self) -> None:
+        if self._click_highlight_after_id is None:
+            return
+        try:
+            self.root.after_cancel(self._click_highlight_after_id)
+        except tk.TclError:
+            pass
+        self._click_highlight_after_id = None
+
+    def _update_click_highlights(self) -> None:
+        # 1. Keep this fully asynchronous on Tk's timer queue so click-driven
+        #    locality highlighting works even while the rest of the app is idle.
+        # 2. Removing the transient green overlay restores the exact prior view
+        #    because the underlying alert marker, if any, was never modified.
+        self._click_highlight_after_id = None
+        if self._closed or not self.root.winfo_exists():
+            return
+
+        attention_duration_seconds = self.attention_duration_seconds()
+        anchor = monotonic()
+        finished_ids: list[int] = []
+        for item_id, highlight in list(self._click_highlight_items.items()):
+            elapsed = anchor - highlight.started_at
+            if elapsed >= attention_duration_seconds:
+                finished_ids.append(item_id)
+                continue
+
+            visible = int(elapsed) % 2 == 0
+            if visible == highlight.visible:
+                continue
+            highlight.visible = visible
+            self.canvas.itemconfigure(item_id, state="normal" if visible else "hidden")
+
+        for item_id in finished_ids:
+            self._remove_click_highlight(item_id)
+
+        if self._click_highlight_items:
+            self._ensure_click_highlight_timer()
+
     def reset(self, refresh: bool | None = None) -> None:
         """Restore the canvas to the original image-only state."""
         for item_id in tuple(self._drawn_markers):
             self.canvas.delete(item_id)
         for item_id in tuple(self._focus_circle_items):
             self.canvas.delete(item_id)
+        for item_id in tuple(self._click_highlight_items):
+            self.canvas.delete(item_id)
         self._drawn_markers.clear()
         self._focus_circle_items.clear()
+        self._click_highlight_items.clear()
         self._hidden_marker_ids.clear()
+        self._cancel_click_highlight_timer()
         self._reset_generation += 1
         self._locality_points = None
         self._apply_view("full")
@@ -439,6 +554,7 @@ class IsraelMap:
         try:
             self.root.withdraw()
             self._cancel_nearest_locality_overlay_timer()
+            self._cancel_click_highlight_timer()
             self.root.after_idle(self._finalize_close)
         except tk.TclError:
             self._finalize_close()
@@ -657,6 +773,28 @@ class IsraelMap:
             if self._background_image_id is not None:
                 self.canvas.tag_raise(item_id, self._background_image_id)
 
+    def _position_click_highlight_item(self, item_id: int, highlight: _ClickHighlightState) -> None:
+        # 1. Reuse the normal marker positioning path so the click highlight
+        #    stays exactly on the calibrated locality point in every zoom view.
+        # 2. The click highlight is intentionally drawn as the same shape and
+        #    size as a normal alert marker so the user sees the true point.
+        self._position_marker_item(
+            item_id,
+            _DrawCommand(
+                latitude=highlight.latitude,
+                longitude=highlight.longitude,
+                color=highlight.color,
+                shape=highlight.shape,
+                size=highlight.size,
+            ),
+        )
+
+    def _reposition_click_highlights(self) -> None:
+        for item_id, highlight in self._click_highlight_items.items():
+            self._position_click_highlight_item(item_id, highlight)
+            if self._background_image_id is not None:
+                self.canvas.tag_raise(item_id, self._background_image_id)
+
     def _build_view_specs(self, base_image: Image.Image) -> dict[str, _MapViewSpec]:
         content_width = base_image.width
         content_height = base_image.height
@@ -780,6 +918,7 @@ class IsraelMap:
 
         self._reposition_drawn_markers()
         self._reposition_focus_circles()
+        self._reposition_click_highlights()
         self.root.update_idletasks()
         if self._watchdog_text_id is not None:
             self._layout_watchdog_panel(
@@ -918,6 +1057,7 @@ class IsraelMap:
         if nearest is None:
             return
         self._show_nearest_locality_overlay(nearest)
+        self._start_click_highlight(nearest)
 
     def _find_nearest_locality(self, x: float, y: float) -> _LocalityPoint | None:
         # 1. Build the projected locality cache lazily so startup stays light
@@ -1161,6 +1301,8 @@ class IsraelMap:
         return text[::-1]
 
     def _raise_overlays(self) -> None:
+        for item_id in self._click_highlight_items:
+            self.canvas.tag_raise(item_id)
         if self._nearest_locality_overlay_window_id is not None:
             self._layout_nearest_locality_overlay()
             self.canvas.tag_raise(self._nearest_locality_overlay_window_id)
@@ -1822,7 +1964,9 @@ class IsraelMap:
 
         usage_lines = (
             "Click inside the map to show the nearest settlement name and coordinates in the upper-left corner.",
+            "The true mapped point of that settlement blinks green for the configured attention duration.",
             "That click info auto-hides after one minute, and a new click replaces it and restarts the timer.",
+            "Earlier clicked points keep blinking until their own timers end, even after you click another locality.",
             "The coordinates field is selectable for copy, and the Copy button copies the coordinates directly.",
         )
         for line in usage_lines:

@@ -346,7 +346,7 @@ def main() -> None:
             notification_trigger_descriptions: list[str] = []
             for alert, alert_text, alert_source in alerts_to_process:
                 is_new_alert = alert.key not in known_lookup
-                biggest_alert_size, blink_marker_ids, resolved_points = handle_alert(
+                biggest_alert_size, changed_marker_ids, resolved_points = handle_alert(
                     alert,
                     alert_text=alert_text,
                     base_dir=BASE_DIR,
@@ -358,21 +358,28 @@ def main() -> None:
                     expiry_manager=expiry_manager,
                     marker_registry=marker_registry,
                 )
+                has_changed_locality_state = bool(changed_marker_ids)
                 if (
                     map_view.blink_on_appearing_enabled()
                     and is_new_alert
                     and alert_source != "startup_replay"
+                    and has_changed_locality_state
                 ):
-                    blink_manager.remember_markers(blink_marker_ids)
+                    blink_manager.remember_markers(changed_marker_ids)
                 if (
                     map_view.small_alert_focus_circle_enabled()
                     and is_new_alert
                     and alert_source != "startup_replay"
+                    and has_changed_locality_state
                     and len(alert.data) <= SMALL_ALERT_FOCUS_CIRCLE_LIMIT
                     and resolved_points
                 ):
                     pending_focus_circle_points.append(resolved_points)
-                if is_new_alert and alert_source != "startup_replay":
+                if (
+                    is_new_alert
+                    and alert_source != "startup_replay"
+                    and has_changed_locality_state
+                ):
                     should_notify_operator = True
                     notification_trigger_descriptions.append(
                         describe_notification_trigger(alert, alert_source)
