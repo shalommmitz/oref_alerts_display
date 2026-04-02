@@ -4,11 +4,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
 
 import yaml
 
 from alert_model import AlertEvent
+from alert_types import AlertTypeInfo, classify_alert
 from israel_map import IsraelMap
 
 
@@ -17,6 +17,7 @@ class AlertDrawResult:
     marker_ids: list[int]
     changed_marker_ids: list[int]
     resolved_points: list[tuple[float, float]]
+    alert_type: AlertTypeInfo
 
 
 class AlertMarkerRegistry:
@@ -92,7 +93,6 @@ def draw_alert(
     map_view: IsraelMap,
     coords: dict[str, dict[str, float]],
     alert: AlertEvent,
-    log_fn: Callable[[str], None],
     marker_registry: AlertMarkerRegistry,
 ) -> AlertDrawResult:
     # 1. Resolve the alert color once per alert and reuse it for every locality.
@@ -101,8 +101,9 @@ def draw_alert(
     drawn_marker_ids: list[int] = []
     changed_marker_ids: list[int] = []
     resolved_points: list[tuple[float, float]] = []
-    color = _alert_color(alert, log_fn)
-    state_key = alert_state_key(alert)
+    alert_type = classify_alert(alert)
+    color = alert_type.color
+    state_key = alert_type.state_key
     for locality in alert.data:
         coords_key = _find_coords_key(locality, coords)
         if coords_key is None:
@@ -119,7 +120,15 @@ def draw_alert(
             map_view,
             locality_key=coords_key,
         )
-        item_id = map_view.draw(latitude, longitude, color, "circle", 8, refresh=False)
+        item_id = map_view.draw(
+            latitude,
+            longitude,
+            color,
+            alert_type.shape,
+            8,
+            refresh=False,
+            include_in_localized_zoom=alert_type.include_in_localized_zoom,
+        )
         marker_registry.replace_marker(
             map_view,
             locality_key=coords_key,
@@ -133,40 +142,8 @@ def draw_alert(
         marker_ids=drawn_marker_ids,
         changed_marker_ids=changed_marker_ids,
         resolved_points=resolved_points,
+        alert_type=alert_type,
     )
-
-
-def is_event_ended_alert(alert: AlertEvent) -> bool:
-    # 1. Keep the "ended event" semantics in one place so time-based cleanup does
-    #    not depend on the current display color.
-    # 2. The user-facing behavior is defined by alert meaning, not by whichever
-    #    color happens to represent that alert today.
-    # 3. The official OREF category id currently arrives as 13 for this title,
-    #    while older saved payloads in this project used 10.
-    return alert.title == "האירוע הסתיים"
-
-
-def is_upcoming_area_alert(alert: AlertEvent) -> bool:
-    # 1. History currently uses category 14 for the yellow pre-alert rows while
-    #    older saved payloads in this project used category 10.
-    # 2. Title matching keeps the decision stable across those source differences.
-    return alert.title == "בדקות הקרובות צפויות להתקבל התרעות באזורך"
-
-
-def alert_state_key(alert: AlertEvent) -> str:
-    # 1. Compare alert semantics, not raw ids, so repeated live alerts with new
-    #    upstream ids still count as the same on-map state.
-    # 2. Keep the state vocabulary aligned with the renderer's semantic color
-    #    mapping so blinking decisions match what the operator sees.
-    if is_upcoming_area_alert(alert):
-        return "yellow"
-    if is_event_ended_alert(alert):
-        return "gray"
-    if alert.cat == "1":
-        return "red"
-    if alert.cat in {"2", "6"}:
-        return "purple"
-    return f"unknown:{alert.cat}:{alert.title}"
 
 
 def _find_coords_key(locality: str, coords: dict[str, dict[str, float]]) -> str | None:
@@ -186,22 +163,3 @@ def _find_coords_key(locality: str, coords: dict[str, dict[str, float]]) -> str 
         if candidate.startswith(normalized_locality):
             return candidate
     return None
-
-
-def _alert_color(alert: AlertEvent, log_fn: Callable[[str], None]) -> str:
-    # 1. Check the title-based update/flash semantics first because the official
-    #    endpoint now emits category ids 13 and 14 for those rows.
-    # 2. Keep backward compatibility with older locally saved payloads whose
-    #    category field used the older matrix-style values.
-    if is_upcoming_area_alert(alert):
-        return "yellow"
-    if is_event_ended_alert(alert):
-        return "gray"
-
-    if alert.cat == "1":
-        return "red"
-    if alert.cat in {"2", "6"}:
-        # 3. The official category metadata maps current id 2 (`uav`) to the
-        #    older matrix id 6 that this project also treats as UAV intrusion.
-        return "purple"
-    raise ValueError(f"Unknown alert code {alert.cat}")

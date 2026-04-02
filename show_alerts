@@ -17,7 +17,8 @@ from alert_expiry import AlertExpiryManager
 from alert_fetcher import AlertFetcher
 from alert_history import AlertHistoryClient
 from alert_model import current_oref_time, decode_alert_text, normalize_live_alert, parse_live_alert_text
-from alert_render import AlertMarkerRegistry, draw_alert, is_event_ended_alert, persist_alert_artifacts
+from alert_types import AlertTypeInfo
+from alert_render import AlertMarkerRegistry, draw_alert, persist_alert_artifacts
 from israel_map import IsraelMap
 from utils import log
 from watchdog import WatchdogMonitor
@@ -26,6 +27,7 @@ from watchdog import WatchdogMonitor
 TEST = False
 REQUEST_TIMEOUT = (3.05, 5)
 POLL_INTERVAL_SECONDS = 10
+DEMO_WAIT_SECONDS = 18
 NOTIFICATION_COOLDOWN_SECONDS = 10
 MAX_KNOWN_ALERTS = 2000
 SMALL_ALERT_FOCUS_CIRCLE_LIMIT = 6
@@ -38,6 +40,7 @@ URL_HISTORY = os.environ.get(
     "https://www.oref.org.il/warningMessages/alert/History/AlertsHistory.json",
 )
 TEST_ALERT_PATH = "last_alert.yaml"
+DEMO_ALERT_PATH = "demo.yaml"
 
 BASE_DIR = Path(__file__).resolve().parent
 ALERT_SOUND_PATH = BASE_DIR / "ocean_4s.mp3"
@@ -62,6 +65,28 @@ def load_test_alert() -> tuple[object | None, str]:
     with (BASE_DIR / TEST_ALERT_PATH).open(encoding="utf-8") as handle:
         raw_alert = yaml.safe_load(handle)
     return normalize_live_alert(raw_alert), str(raw_alert)
+
+
+def load_demo_alerts() -> list[tuple[object, str]]:
+    # 1. Keep demo playback data in one local YAML file so operators can adjust
+    #    the sequence without touching Python code.
+    # 2. Normalize through the live-alert path so demo playback exercises the
+    #    same rendering and classification logic as real alerts.
+    with (BASE_DIR / DEMO_ALERT_PATH).open(encoding="utf-8") as handle:
+        raw_items = yaml.safe_load(handle)
+    if not isinstance(raw_items, list):
+        raise ValueError("demo.yaml must contain a top-level list of alerts")
+
+    demo_alerts: list[tuple[object, str]] = []
+    for raw_item in raw_items:
+        if not isinstance(raw_item, dict):
+            raise ValueError("Each demo alert entry must be a mapping")
+        alert = normalize_live_alert(raw_item)
+        if alert is None:
+            continue
+        alert_text = yaml.safe_dump(raw_item, allow_unicode=True, sort_keys=False)
+        demo_alerts.append((alert, alert_text))
+    return demo_alerts
 
 
 def describe_notification_trigger(alert, alert_source: str) -> str:
@@ -140,32 +165,72 @@ def handle_alert(
     map_view: IsraelMap,
     expiry_manager: AlertExpiryManager,
     marker_registry: AlertMarkerRegistry,
-) -> tuple[int, list[int], list[tuple[float, float]]]:
+    log_alert_details: bool = True,
+) -> tuple[int, list[int], list[int], list[tuple[float, float]], AlertTypeInfo | None]:
     # 1. Skip alerts that were already processed, whether they came from live polling
     #    or from the history replay path.
     # 2. Return only the newly added or state-changed marker ids for blinking,
     #    while still drawing the full alert batch and preserving expiry logic.
     if alert.key in known_lookup:
-        return biggest_alert_size, [], []
+        return biggest_alert_size, [], [], [], None
 
     biggest_alert_size = persist_alert_artifacts(
         alert,
         base_dir=base_dir,
         biggest_alert_size=biggest_alert_size,
     )
-    log("Alert contents:" + str(alert.raw))
+    if log_alert_details:
+        # 1. Keep demo playback silent between the start/end framing logs while
+        #    preserving the normal detailed alert logging for live operation.
+        # 2. The human-readable title/locality printout is part of that same
+        #    operator-facing log path, so gate it with the same switch.
+        log("Alert contents:" + str(alert.raw))
     remember_alert(alert.key, known_order, known_lookup)
-    try:
-        a = yaml.safe_load(alert_text)
-        print()
-        print(a["title"])
-        print("  ", ", ".join(a["data"]))
-        print()
-    except:
-        pass
-    draw_result = draw_alert(map_view, coords, alert, log, marker_registry)
-    expiry_manager.remember_drawn_alert(alert, draw_result.marker_ids)
-    return biggest_alert_size, draw_result.changed_marker_ids, draw_result.resolved_points
+    if log_alert_details:
+        try:
+            a = yaml.safe_load(alert_text)
+            print()
+            print(a["title"])
+            print("  ", ", ".join(a["data"]))
+            print()
+        except Exception:
+            pass
+    draw_result = draw_alert(map_view, coords, alert, marker_registry)
+    expiry_manager.remember_drawn_alert(
+        alert,
+        draw_result.marker_ids,
+        alert_type=draw_result.alert_type,
+    )
+    return (
+        biggest_alert_size,
+        draw_result.marker_ids,
+        draw_result.changed_marker_ids,
+        draw_result.resolved_points,
+        draw_result.alert_type,
+    )
+
+
+def reset_runtime_alert_state(
+    *,
+    known_order: list[str],
+    known_lookup: set[str],
+    marker_registry: AlertMarkerRegistry,
+    expiry_manager: AlertExpiryManager,
+    blink_manager: AlertBlinkManager,
+    focus_circle_manager: AlertFocusCircleManager,
+    map_view: IsraelMap,
+) -> None:
+    # 1. Keep full runtime resets in one helper because manual clear and demo
+    #    mode both need the same coordinated cleanup.
+    # 2. Reset the map last so the UI reflects the cleared state immediately
+    #    after the in-memory registries are dropped.
+    known_order.clear()
+    known_lookup.clear()
+    marker_registry.clear()
+    expiry_manager.clear()
+    blink_manager.clear(map_view)
+    focus_circle_manager.clear(map_view)
+    map_view.reset(refresh=False)
 
 
 def main() -> None:
@@ -198,6 +263,7 @@ def main() -> None:
     last_watchdog_state: tuple[str, str] | None = None
     last_operator_notification_at: float | None = None
     last_reset_generation = map_view.reset_generation()
+    last_demo_request_generation = map_view.demo_request_generation()
 
     biggest_alert_size = 0
     biggest_alert_path = BASE_DIR / "biggest_alert.yaml"
@@ -234,7 +300,136 @@ def main() -> None:
             else:
                 focus_circle_manager.clear(map_view)
 
+        def run_demo() -> bool:
+            # 1. Keep demo playback on the main loop so it reuses the same
+            #    drawing, blinking, zoom, and expiry behavior as live alerts.
+            # 2. Pause live polling for the duration so the operator sees only
+            #    the scripted demo sequence, then resume normal operation.
+            nonlocal biggest_alert_size
+            nonlocal last_operator_notification_at
+
+            def update_demo_effects() -> None:
+                # 1. Reuse the normal transient-alert animation updates while demo
+                #    mode is active so blinking markers and focus circles keep running.
+                # 2. Override the watchdog text to `Demo` because live polling is
+                #    intentionally paused and `Online` would be misleading.
+                update_attention_effects()
+                map_view.set_watchdog_status(
+                    "Demo",
+                    level="online",
+                    pulse_on=int(monotonic()) % 2 == 0,
+                )
+
+            if fetcher is not None:
+                fetcher.pause()
+                fetcher.clear_pending_results()
+            try:
+                try:
+                    demo_alerts = load_demo_alerts()
+                except Exception as exc:
+                    log(
+                        "Error: could not load demo.yaml "
+                        f"({exc.__class__.__name__}: {exc})"
+                    )
+                    return True
+                if not demo_alerts:
+                    log("Demo requested, but demo.yaml is empty")
+                    return True
+
+                log("Demo started")
+                update_demo_effects()
+                reset_runtime_alert_state(
+                    known_order=known_order,
+                    known_lookup=known_lookup,
+                    marker_registry=marker_registry,
+                    expiry_manager=expiry_manager,
+                    blink_manager=blink_manager,
+                    focus_circle_manager=focus_circle_manager,
+                    map_view=map_view,
+                )
+
+                demo_known_order: list[str] = []
+                demo_known_lookup: set[str] = set()
+                last_operator_notification_at = None
+                for index, (alert, alert_text) in enumerate(demo_alerts):
+                    if not map_view.is_open():
+                        return False
+                    (
+                        biggest_alert_size,
+                        marker_ids,
+                        changed_marker_ids,
+                        resolved_points,
+                        alert_type,
+                    ) = handle_alert(
+                        alert,
+                        alert_text=alert_text,
+                        base_dir=BASE_DIR,
+                        biggest_alert_size=biggest_alert_size,
+                        coords=coords,
+                        known_order=demo_known_order,
+                        known_lookup=demo_known_lookup,
+                        map_view=map_view,
+                        expiry_manager=expiry_manager,
+                        marker_registry=marker_registry,
+                        log_alert_details=False,
+                    )
+                    if alert_type is not None:
+                        map_view.set_latest_alert_title(
+                            alert.title,
+                            clear_when_marker_ids_gone=(
+                                marker_ids
+                                if alert_type.auto_clear_after_seconds is not None
+                                else None
+                            ),
+                        )
+                        if alert_type.reassess_zoom_on_new:
+                            map_view.refresh_localized_zoom()
+                    if map_view.blink_on_appearing_enabled() and changed_marker_ids:
+                        blink_manager.remember_markers(changed_marker_ids)
+                    if (
+                        map_view.small_alert_focus_circle_enabled()
+                        and changed_marker_ids
+                        and len(alert.data) <= SMALL_ALERT_FOCUS_CIRCLE_LIMIT
+                        and resolved_points
+                    ):
+                        focus_circle_manager.remember_points(map_view, resolved_points)
+                    if not map_view.update():
+                        return False
+                    if index >= len(demo_alerts) - 1:
+                        continue
+                    if not utils.sleep_with_ui(
+                        map_view,
+                        DEMO_WAIT_SECONDS,
+                        on_tick=update_demo_effects,
+                    ):
+                        return False
+
+                reset_runtime_alert_state(
+                    known_order=known_order,
+                    known_lookup=known_lookup,
+                    marker_registry=marker_registry,
+                    expiry_manager=expiry_manager,
+                    blink_manager=blink_manager,
+                    focus_circle_manager=focus_circle_manager,
+                    map_view=map_view,
+                )
+                update_demo_effects()
+                map_view.set_latest_alert_title("Demo done")
+                log("Demo ended")
+                return True
+            finally:
+                if fetcher is not None:
+                    fetcher.clear_pending_results()
+                    fetcher.resume()
+
         while map_view.is_open():
+            current_demo_request_generation = map_view.demo_request_generation()
+            if current_demo_request_generation != last_demo_request_generation:
+                last_demo_request_generation = current_demo_request_generation
+                if not run_demo():
+                    break
+                last_reset_generation = map_view.reset_generation()
+
             current_reset_generation = map_view.reset_generation()
             if current_reset_generation != last_reset_generation:
                 # 1. `Edit -> Clear` wipes the canvas immediately, but the main
@@ -346,7 +541,13 @@ def main() -> None:
             notification_trigger_descriptions: list[str] = []
             for alert, alert_text, alert_source in alerts_to_process:
                 is_new_alert = alert.key not in known_lookup
-                biggest_alert_size, changed_marker_ids, resolved_points = handle_alert(
+                (
+                    biggest_alert_size,
+                    marker_ids,
+                    changed_marker_ids,
+                    resolved_points,
+                    alert_type,
+                ) = handle_alert(
                     alert,
                     alert_text=alert_text,
                     base_dir=BASE_DIR,
@@ -358,6 +559,15 @@ def main() -> None:
                     expiry_manager=expiry_manager,
                     marker_registry=marker_registry,
                 )
+                if alert_type is not None:
+                    map_view.set_latest_alert_title(
+                        alert.title,
+                        clear_when_marker_ids_gone=(
+                            marker_ids
+                            if alert_type.auto_clear_after_seconds is not None
+                            else None
+                        ),
+                    )
                 has_changed_locality_state = bool(changed_marker_ids)
                 if (
                     map_view.blink_on_appearing_enabled()
@@ -384,7 +594,11 @@ def main() -> None:
                     notification_trigger_descriptions.append(
                         describe_notification_trigger(alert, alert_source)
                     )
-                if is_new_alert and not is_event_ended_alert(alert):
+                if (
+                    is_new_alert
+                    and alert_type is not None
+                    and alert_type.reassess_zoom_on_new
+                ):
                     should_reassess_zoom = True
 
             if should_reassess_zoom:

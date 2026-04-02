@@ -26,6 +26,7 @@ Current repo contents relevant to runtime behavior:
 - `alert_expiry.py`: time-based cleanup for auto-cleared markers
 - `alert_history.py`: history replay client for startup and recovery
 - `alert_model.py`: alert normalization helpers
+- `alert_types.py`: YAML-backed alert-type classification and policy loader
 - `alert_render.py`: alert drawing and persistence helpers
 - `israel_map.py`: map rendering module
 - `utils.py`: shared helpers
@@ -33,10 +34,12 @@ Current repo contents relevant to runtime behavior:
 - `align_map`: interactive calibration helper for collecting control points on the outline image
 - `convert_localities.py`: one-shot data conversion script
 - `create_venv`: helper script that recreates `venv` and installs repo dependencies
+- `demo.yaml`: scripted alert sequence for the in-app demo mode
 - `localities.yaml`: large source dataset of Israeli localities
 - `cities.json`: fallback locality dataset with broader coverage
 - `locality_latitude_longitude.yaml`: generated runtime lookup table
 - `align_map_points.yaml`: generated calibration control points collected with `align_map`
+- `alert_categories.yaml`: runtime alert-title policy file
 - `alert_example_1.yaml`, `alert_example_2.yaml`: sample alerts
 - `last_alert.yaml`: generated runtime artifact containing the last processed alert
 - `israel_outline.png`: background image asset used by the map
@@ -61,24 +64,22 @@ Main loop responsibilities:
 - reset alert-loop dedup/runtime state after a manual map clear so active alerts can repopulate and re-zoom on the next poll
 - save the last processed alert to `last_alert.yaml`
 - map each alerted locality to coordinates
-- choose a drawing color from alert category
+- classify each alert through `alert_categories.yaml`
+- choose drawing color and per-type behavior from that YAML policy
 - draw a circle marker for each matched locality
 - optionally draw a temporary pale-blue focus circle for new alerts with 6 or fewer localities
 - optionally raise the window and play a sound for non-startup alerts, based on persisted settings
-- automatically remove "האירוע הסתיים" markers 10 minutes after their appearance time
+- automatically remove markers for any alert type whose YAML entry declares auto-clear behavior
 - pump the Tk event loop once per iteration with `map_view.update()`
 
-Current alert category mapping in `show_alerts`:
+Current alert-type matching behavior:
 
-- `cat == "1"` -> `red`
-- `cat == "2"` or `cat == "6"` -> `purple`
-- title `בדקות הקרובות צפויות להתקבל התרעות באזורך` -> `yellow`
-- title `האירוע הסתיים` -> `gray`
+- all alert matching and per-type runtime behavior are loaded from `alert_categories.yaml`
 
-Current unknown-category behavior:
+Current unknown-alert behavior:
 
 - print the alert
-- exit immediately
+- exit immediately when no YAML alert-type entry matches
 
 Configurable endpoints:
 
@@ -133,8 +134,8 @@ This module tracks markers that should disappear automatically.
 
 Key behaviors:
 
-- tracks only the semantic "event ended" alert type
-- expires those markers 10 minutes after alert appearance
+- tracks only markers whose alert category entry declares auto-clear behavior in `alert_categories.yaml`
+- expires those markers after their configured duration
 - uses history timestamps when available so replayed rows expire on their original timeline
 - computes expiry deadlines on the explicit `Asia/Jerusalem` timezone basis
 - limits marker deletions per pass so large expiry batches do not block the UI thread for long stretches
@@ -174,7 +175,8 @@ Key behaviors:
 - persists `last_alert.yaml`
 - updates `biggest_alert.yaml`
 - resolves localities to coordinates
-- chooses marker color from normalized alert fields
+- classifies alerts through `alert_categories.yaml`
+- chooses marker color and state key from the YAML policy
 - draws one marker per resolved locality
 
 ### `israel_map.py`
@@ -194,6 +196,7 @@ Key behaviors:
 - persists image-save, alert-notification, and map-display settings in `settings.yaml`
 - precomputes localized `2x` zoom views and can switch between them without redrawing marker ids
 - resolves nearest-settlement lookups from clicks in interactive mode
+- shows the most recent alert title in the lower-right corner
 
 Public methods:
 
@@ -223,6 +226,7 @@ Supported shapes:
 - `circle`
 - `rect`
 - `square`
+- `triangle`
 
 Current geographic validation bounds:
 
@@ -252,7 +256,7 @@ Current menu structure when `show_controls=True`:
 - `File` -> `Save`, `Settings`, `Exit`
 - `Edit` -> `Clear`
 - `Send to Back` -> lowers the map window behind other windows
-- `Help` -> `Usage`, `Color Legend`, `About`
+- `Help` -> `Usage`, `Demo`, `Color Legend`, `About`
 
 Current interactive click behavior:
 
@@ -262,6 +266,15 @@ Current interactive click behavior:
 - a new click does not cancel earlier click-highlights that are still blinking
 - the coordinates field is selectable for copy, and a `Copy` button copies the coordinates directly
 - the locality-name display prefers `python-bidi` for Hebrew RTL display
+
+Current demo behavior:
+
+- `Help -> Demo` plays the alerts listed in `demo.yaml`
+- live polling is paused for the duration of the demo
+- the status label is shown as `Demo` while demo playback is active
+- demo alerts are replayed one at a time with an 18-second gap
+- when the demo ends, the map is cleared and normal operation resumes
+- the lower-right latest-alert title is set to `Demo done` until the next real alert replaces it
 
 Current Settings dialog sections:
 
@@ -286,9 +299,9 @@ Current persisted settings in `settings.yaml`:
 Current localized zoom behavior:
 
 - precomputes three zoomed background variants at launch: top-half `2x`, middle-half `2x`, bottom-half `2x`
-- evaluates zoom only when new non-gray alerts are added
-- uses all currently visible non-gray markers when deciding whether one zoom region contains them all
-- does not reassess zoom when gray `Event Ended` markers appear or when those markers later expire
+- evaluates zoom only when new alert types whose YAML entry enables `reassess_zoom_on_new` are added
+- uses all currently visible markers whose YAML entry enables `include_in_localized_zoom` when deciding whether one zoom region contains them all
+- does not reassess zoom for alert types whose YAML entry opts out, including when those markers later auto-clear
 - keeps marker sizes unchanged in pixels while zoomed
 
 Current alert-notification behavior:
@@ -305,7 +318,7 @@ Current marker-blink behavior:
 
 - every newly drawn alert marker blinks for the configured attention duration
 - blink cadence is 1 second visible, 1 second hidden
-- blinking applies to all alert categories, including gray `Event Ended`
+- blinking applies to all classified alert categories
 - repeated alerts do not restart blinking for localities that are already showing the same alert state
 - startup history replay alerts are excluded from blinking
 - the operator can disable blinking in Settings, and doing so restores any currently hidden blinking markers immediately
@@ -316,7 +329,7 @@ Current small-alert focus-circle behavior:
 - new non-startup alerts with 6 or fewer localities can draw a pale-blue thin focus circle around the alert cluster center
 - the focus circle lasts for the same configured attention duration used by blinking
 - the focus circle is opt-out through `small_alert_focus_circle`
-- gray `Event Ended` alerts are included in this feature
+- eligibility is independent of alert type unless the runtime intentionally excludes a source such as startup replay
 - startup history replay alerts are excluded from this feature
 - same-state repeat alerts do not create a new focus circle
 - the circle is drawn as a separate overlay item, so removing it restores the exact underlying canvas content
@@ -428,6 +441,26 @@ Observed structure:
 - `points` mapping keyed by Hebrew city name
 - each point contains `latitude`, `longitude`, `x`, `y`
 
+### `alert_categories.yaml`
+
+Runtime alert-category policy file used by `show_alerts`.
+
+Observed structure:
+
+- top-level YAML mapping keyed by alert `title`
+- each title entry defines color, shape, and behavior
+- `known_cats` may list related `cat` values for reference, but the runtime classification key is the title
+- `unknown_title` is a special fallback entry for titles not otherwise listed
+
+### `reference_alert_categories.yaml`
+
+Local cache of the official OREF category metadata, used only as a human reference.
+
+Observed structure:
+
+- mirrors `https://www.oref.org.il/alerts/alertCategories.json`
+- the most relevant fields are `category`, which is the English description, and `matrix_id`, which corresponds to this project's alert `cat` value
+
 ### Sample alert files
 
 - `alert_example_1.yaml`
@@ -474,6 +507,7 @@ Canonical names in this repository:
 
 - `cities.json`
 - `align_map_points.yaml`
+- `alert_categories.yaml`
 - `israel_outline.png`
 - `locality_latitude_longitude.yaml`
 - `alert_example_1.yaml`
@@ -502,9 +536,9 @@ Canonical names in this repository:
 - History replay accuracy depends on the upstream history endpoint including usable timestamps.
 - `show_alerts` depends on the current working directory for local file discovery.
 - Locality matching is based on exact match plus prefix heuristics; ambiguous or renamed localities may fail to resolve.
-- Unknown alert categories are fatal.
+- Alerts that do not match any YAML alert-type entry are fatal.
 - The official history endpoint has been observed to return HTTP 200 with an empty body when there are no recent alerts.
-- Only the semantic "האירוע הסתיים" alert type auto-clears after 10 minutes; other markers remain until manually cleared.
+- Only alert categories that declare `auto_clear_after_seconds` in `alert_categories.yaml` auto-clear; other markers remain until manually cleared.
 - Replay timing correctness depends on interpreting OREF timestamps in `Asia/Jerusalem`, not in the consuming machine's local timezone.
 - Large batches of expired markers should be processed incrementally; avoid reintroducing unbounded O(n^2) marker removal on the Tk thread.
 - The watchdog reports Online/Offline state, treats fetch failure as Offline, and logs state transitions with reasons.

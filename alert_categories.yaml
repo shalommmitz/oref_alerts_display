@@ -1,0 +1,68 @@
+"ירי רקטות וטילים":
+  key: missile_attack
+  known_cats:
+    - "1"
+  color: red
+  shape: circle
+  legend_label: Missile / Rocket Attack
+  legend_description: Immediate alert for an active incoming attack.
+  include_in_localized_zoom: true
+  reassess_zoom_on_new: true
+
+"האירוע הסתיים":
+  key: event_ended
+  known_cats:
+    - "10"
+    - "13"
+  color: gray
+  shape: circle
+  legend_label: Event Ended
+  legend_description: The local alert event has ended and the marker will clear later.
+  include_in_localized_zoom: false
+  reassess_zoom_on_new: false
+  auto_clear_after_seconds: 600
+
+"בדקות הקרובות צפויות להתקבל התרעות באזורך":
+  key: area_pre_alert
+  known_cats:
+    - "10"
+    - "14"
+  color: yellow
+  shape: circle
+  legend_label: Area Pre-Alert
+  legend_description: Alerts are expected in the area in the next few minutes.
+  include_in_localized_zoom: true
+  reassess_zoom_on_new: true
+
+"חדירת מחבלים":
+  key: terrorist_infiltration
+  known_cats:
+    - "13"
+  color: orange
+  shape: circle
+  legend_label: Terrorist Infiltration
+  legend_description: Hostile intruders or terrorists were detected in the area.
+  include_in_localized_zoom: true
+  reassess_zoom_on_new: true
+
+"חדירת כלי טיס עוין":
+  key: uav_intrusion
+  known_cats:
+    - "2"
+    - "6"
+  color: purple
+  shape: circle
+  legend_label: UAV Intrusion
+  legend_description: Hostile aircraft or drone intrusion alert.
+  include_in_localized_zoom: true
+  reassess_zoom_on_new: true
+
+unknown_title:
+  key: unknown_title
+  color: blue
+  shape: triangle
+  legend_label: Unknown Alert Title
+  legend_description: Fallback display used when an alert title is not yet listed in this file.
+  show_in_legend: false
+  include_in_localized_zoom: true
+  reassess_zoom_on_new: true

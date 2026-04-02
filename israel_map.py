@@ -14,6 +14,7 @@ from time import monotonic
 from typing import Callable
 
 from PIL import Image, ImageDraw
+from alert_types import get_alert_type_registry
 
 try:
     from bidi.algorithm import get_display as _get_bidi_display
@@ -39,6 +40,7 @@ class _DrawCommand:
     color: str
     shape: str
     size: int
+    include_in_localized_zoom: bool
 
 
 @dataclass(frozen=True)
@@ -97,7 +99,7 @@ class IsraelMap:
         "orange",
         "background",
     }
-    _ALLOWED_SHAPES = {"circle", "rect", "square"}
+    _ALLOWED_SHAPES = {"circle", "rect", "square", "triangle"}
     _COLOR_MAP = {
         "white": "#ffffff",
         "black": "#000000",
@@ -164,13 +166,6 @@ class IsraelMap:
     _STATUS_PANEL_Y_OFFSET = 14
     _LOG_TEXT_Y_OFFSET = 6
     _STATUS_AND_BUTTON_FONT = ("TkDefaultFont", 11, "bold")
-    _LEGEND_ITEMS = (
-        ("red", "Missile / Rocket Attack", "Immediate alert for an active incoming attack."),
-        ("purple", "UAV Intrusion", "Hostile aircraft or drone intrusion alert."),
-        ("yellow", "Area Pre-Alert", "Alerts are expected in the area in the next few minutes."),
-        ("gray", "Event Ended", "The local alert event has ended and the marker will clear later."),
-    )
-
     def __init__(
         self,
         width: int | None = None,
@@ -187,6 +182,7 @@ class IsraelMap:
         self.bounds = _MapBounds()
         self._closed = False
         self._reset_generation = 0
+        self._demo_request_generation = 0
         self._drawn_markers: dict[int, _DrawCommand] = {}
         self._focus_circle_items: dict[int, _FocusCircleCommand] = {}
         self._click_highlight_items: dict[int, _ClickHighlightState] = {}
@@ -211,6 +207,9 @@ class IsraelMap:
         self._watchdog_background_id: int | None = None
         self._watchdog_icon_id: int | None = None
         self._watchdog_text_id: int | None = None
+        self._latest_alert_background_id: int | None = None
+        self._latest_alert_text_id: int | None = None
+        self._latest_alert_title_item_ids: set[int] | None = None
         self._watchdog_level = "offline"
         self._watchdog_pulse_on = False
         self._save_include_datetime_var: tk.BooleanVar | None = None
@@ -284,6 +283,8 @@ class IsraelMap:
         shape: str,
         size: int,
         refresh: bool | None = None,
+        *,
+        include_in_localized_zoom: bool = True,
     ) -> int:
         """Draw a marker on the map by geographic coordinate."""
         self._validate_draw_params(latitude, longitude, color, shape, size)
@@ -291,7 +292,14 @@ class IsraelMap:
         draw_color = self._resolve_draw_color(color)
         item_id = self._create_marker_item(shape, draw_color)
 
-        self._drawn_markers[item_id] = _DrawCommand(latitude, longitude, color, shape, size)
+        self._drawn_markers[item_id] = _DrawCommand(
+            latitude,
+            longitude,
+            color,
+            shape,
+            size,
+            bool(include_in_localized_zoom),
+        )
         self._position_marker_item(item_id, self._drawn_markers[item_id])
         self._raise_overlays()
         if refresh is None:
@@ -354,6 +362,10 @@ class IsraelMap:
         self._drawn_markers.pop(item_id, None)
         self._hidden_marker_ids.discard(item_id)
         self.canvas.delete(item_id)
+        if self._latest_alert_title_item_ids is not None and item_id in self._latest_alert_title_item_ids:
+            self._latest_alert_title_item_ids.discard(item_id)
+            if not self._latest_alert_title_item_ids:
+                self.clear_latest_alert_title()
         if refresh is None:
             refresh = self.auto_refresh
         if refresh:
@@ -507,6 +519,7 @@ class IsraelMap:
         self._click_highlight_items.clear()
         self._hidden_marker_ids.clear()
         self._cancel_click_highlight_timer()
+        self.clear_latest_alert_title()
         self._reset_generation += 1
         self._locality_points = None
         self._apply_view("full")
@@ -639,9 +652,9 @@ class IsraelMap:
 
     def refresh_localized_zoom(self) -> None:
         # 1. Recompute the preferred map view from the currently visible alert
-        #    markers only when the caller explicitly requests it.
-        # 2. This lets show_alerts trigger zoom changes only for new alerts,
-        #    while expiry and gray-marker cleanup can leave the current view alone.
+        #    markers that participate in localized zoom.
+        # 2. This lets the runtime decide via external policy which alert types
+        #    should influence zooming without hard-coding those rules here.
         desired_view_key = self._pick_localized_view_key()
         self._apply_view(desired_view_key)
 
@@ -652,6 +665,52 @@ class IsraelMap:
             self.root.bell()
         except tk.TclError:
             pass
+
+    def set_latest_alert_title(
+        self,
+        title: str,
+        *,
+        clear_when_marker_ids_gone: list[int] | None = None,
+    ) -> None:
+        if self._closed or not self.root.winfo_exists():
+            return
+        display_text = self._to_visual_rtl_text(str(title))
+        if self._latest_alert_background_id is None:
+            self._latest_alert_background_id = self.canvas.create_rectangle(
+                0,
+                0,
+                0,
+                0,
+                fill="#f7f8f9",
+                outline="#c8cdd2",
+                width=1,
+            )
+        if self._latest_alert_text_id is None:
+            self._latest_alert_text_id = self.canvas.create_text(
+                0,
+                0,
+                text=display_text,
+                anchor="se",
+                fill="#2f3841",
+                font=("TkDefaultFont", 11, "bold"),
+            )
+        else:
+            self.canvas.itemconfigure(self._latest_alert_text_id, text=display_text, state="normal")
+            self.canvas.itemconfigure(self._latest_alert_background_id, state="normal")
+        self._latest_alert_title_item_ids = (
+            set(clear_when_marker_ids_gone)
+            if clear_when_marker_ids_gone
+            else None
+        )
+        self._layout_latest_alert_title_panel()
+        self._raise_overlays()
+
+    def clear_latest_alert_title(self) -> None:
+        self._latest_alert_title_item_ids = None
+        if self._latest_alert_text_id is not None:
+            self.canvas.itemconfigure(self._latest_alert_text_id, state="hidden")
+        if self._latest_alert_background_id is not None:
+            self.canvas.itemconfigure(self._latest_alert_background_id, state="hidden")
 
     def _finalize_close(self) -> None:
         if not self.root.winfo_exists():
@@ -717,6 +776,17 @@ class IsraelMap:
     def _create_marker_item(self, shape: str, draw_color: str) -> int:
         if shape == "circle":
             return self.canvas.create_oval(0, 0, 0, 0, fill=draw_color, outline=draw_color)
+        if shape == "triangle":
+            return self.canvas.create_polygon(
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                fill=draw_color,
+                outline=draw_color,
+            )
         return self.canvas.create_rectangle(0, 0, 0, 0, fill=draw_color, outline=draw_color)
 
     def _position_marker_item(self, item_id: int, marker: _DrawCommand) -> None:
@@ -724,6 +794,16 @@ class IsraelMap:
         half = marker.size / 2
         if marker.shape == "circle":
             self.canvas.coords(item_id, x - half, y - half, x + half, y + half)
+        elif marker.shape == "triangle":
+            self.canvas.coords(
+                item_id,
+                x,
+                y - half,
+                x - half,
+                y + half,
+                x + half,
+                y + half,
+            )
         elif marker.shape == "square":
             self.canvas.coords(item_id, x - half, y - half, x + half, y + half)
         else:
@@ -786,6 +866,7 @@ class IsraelMap:
                 color=highlight.color,
                 shape=highlight.shape,
                 size=highlight.size,
+                include_in_localized_zoom=False,
             ),
         )
 
@@ -865,7 +946,7 @@ class IsraelMap:
 
         relevant_points: list[tuple[float, float]] = []
         for marker in self._drawn_markers.values():
-            if marker.color == "gray":
+            if not marker.include_in_localized_zoom:
                 continue
             relevant_points.append(self._latlon_to_base_xy(marker.latitude, marker.longitude))
 
@@ -927,6 +1008,8 @@ class IsraelMap:
             )
         if self._log_time_text_id is not None:
             self._layout_log_timestamp_panel()
+        if self._latest_alert_text_id is not None:
+            self._layout_latest_alert_title_panel()
         self._raise_overlays()
 
     def _create_photo_image(self, image: Image.Image) -> tk.PhotoImage:
@@ -1021,6 +1104,7 @@ class IsraelMap:
             "Help",
             (
                 ("Usage", self._open_usage_dialog_control),
+                ("Demo", self._start_demo_control),
                 ("Color Legend", self._open_color_legend_dialog_control),
                 ("About", self._open_about_dialog_control),
             ),
@@ -1316,6 +1400,10 @@ class IsraelMap:
             self.canvas.tag_raise(self._watchdog_icon_id)
         if self._watchdog_text_id is not None:
             self.canvas.tag_raise(self._watchdog_text_id)
+        if self._latest_alert_background_id is not None:
+            self.canvas.tag_raise(self._latest_alert_background_id)
+        if self._latest_alert_text_id is not None:
+            self.canvas.tag_raise(self._latest_alert_text_id)
         if self._menu_window_id is not None:
             self.canvas.tag_raise(self._menu_window_id)
 
@@ -1410,15 +1498,14 @@ class IsraelMap:
 
         panel_left = self._STATUS_EDGE_MARGIN
         panel_bottom = self.height - self._STATUS_EDGE_MARGIN - self._STATUS_PANEL_Y_OFFSET
-        text_x = panel_left + 21
+        text_x = panel_left + 23
         text_y = panel_bottom - 4
         self.canvas.coords(self._watchdog_text_id, text_x, text_y)
         text_bbox = self.canvas.bbox(self._watchdog_text_id)
         if text_bbox is None:
             return
 
-        icon_radius = 4
-        icon_gap = 9
+        icon_radius = 5
         icon_cx = panel_left + 12
         icon_cy = (text_bbox[1] + text_bbox[3]) / 2
         icon_fill = colors["icon_on"] if pulse_on else colors["icon_off"]
@@ -1472,8 +1559,38 @@ class IsraelMap:
                 outline=colors["panel_border"],
             )
 
+    def _layout_latest_alert_title_panel(self) -> None:
+        if self._latest_alert_text_id is None or self._latest_alert_background_id is None:
+            return
+        panel_right = self.width - self._STATUS_EDGE_MARGIN
+        panel_bottom = self.height - self._STATUS_EDGE_MARGIN
+        text_x = panel_right - 8
+        text_y = panel_bottom - 6
+        self.canvas.coords(self._latest_alert_text_id, text_x, text_y)
+        bbox = self.canvas.bbox(self._latest_alert_text_id)
+        if bbox is None:
+            return
+        self.canvas.coords(
+            self._latest_alert_background_id,
+            bbox[0] - 8,
+            bbox[1] - 6,
+            bbox[2] + 8,
+            bbox[3] + 6,
+        )
+
     def _clear_map_control(self) -> None:
         self.reset(refresh=True)
+
+    def _start_demo_control(self) -> None:
+        # 1. Signal the outer runtime loop instead of trying to run the demo
+        #    directly from the Tk callback, because the alert pipeline state
+        #    lives outside IsraelMap.
+        # 2. A generation counter keeps repeated menu clicks observable without
+        #    coupling this module to any specific callback registration scheme.
+        self._demo_request_generation += 1
+
+    def demo_request_generation(self) -> int:
+        return self._demo_request_generation
 
     def _save_map_control(self) -> None:
         # 1. File > Save should act immediately with the current persisted
@@ -1904,15 +2021,22 @@ class IsraelMap:
         )
         card.pack(fill="both", expand=True)
 
-        for index, (color_name, label, description) in enumerate(self._LEGEND_ITEMS):
-            self._add_legend_row(card, color_name=color_name, label=label, description=description)
-            if index < len(self._LEGEND_ITEMS) - 1:
+        legend_items = get_alert_type_registry().legend_items()
+        for index, alert_type in enumerate(legend_items):
+            self._add_legend_row(
+                card,
+                color_name=alert_type.color,
+                shape=alert_type.shape,
+                label=alert_type.legend_label,
+                description=alert_type.legend_description,
+            )
+            if index < len(legend_items) - 1:
                 divider = tk.Frame(card, bg="#d7dce0", height=1)
                 divider.pack(fill="x", pady=8)
 
         note = tk.Label(
             body,
-            text="A newer alert replaces the older marker at the same locality. Event Ended markers clear after 10 minutes.",
+            text=get_alert_type_registry().auto_clear_note_text(),
             anchor="w",
             justify="left",
             wraplength=360,
@@ -2117,7 +2241,15 @@ class IsraelMap:
                 except tk.TclError:
                     pass
 
-    def _add_legend_row(self, parent: tk.Widget, *, color_name: str, label: str, description: str) -> None:
+    def _add_legend_row(
+        self,
+        parent: tk.Widget,
+        *,
+        color_name: str,
+        shape: str,
+        label: str,
+        description: str,
+    ) -> None:
         # 1. Use the same drawn-circle visual language as the map itself so the
         #    legend is immediately recognizable.
         # 2. Keep the text split into a short label and a sentence because the
@@ -2135,7 +2267,10 @@ class IsraelMap:
         )
         swatch.pack(side="left", padx=(0, 12))
         color = self._resolve_draw_color(color_name)
-        swatch.create_oval(5, 5, 21, 21, fill=color, outline=color)
+        if shape == "triangle":
+            swatch.create_polygon(13, 5, 5, 21, 21, 21, fill=color, outline=color)
+        else:
+            swatch.create_oval(5, 5, 21, 21, fill=color, outline=color)
 
         text_column = tk.Frame(row, bg="#f7f8f9")
         text_column.pack(side="left", fill="x", expand=True)
@@ -2313,6 +2448,16 @@ class IsraelMap:
             if marker.shape == "circle":
                 draw.ellipse(
                     (x - half, y - half, x + half, y + half),
+                    fill=color,
+                    outline=color,
+                )
+            elif marker.shape == "triangle":
+                draw.polygon(
+                    (
+                        (x, y - half),
+                        (x - half, y + half),
+                        (x + half, y + half),
+                    ),
                     fill=color,
                     outline=color,
                 )
@@ -2541,6 +2686,8 @@ class IsraelMap:
     def _resolve_draw_color(self, color: str) -> str:
         if color == "background":
             return self.background_color
+        if self._is_hex_color(color):
+            return color
         return self._COLOR_MAP[color]
 
     def _pad_image(self, image: Image.Image, padding: int) -> Image.Image:
@@ -2576,9 +2723,11 @@ class IsraelMap:
         shape: str,
         size: int,
     ) -> None:
-        if color not in self._ALLOWED_COLORS:
+        if color not in self._ALLOWED_COLORS and not self._is_hex_color(color):
             allowed = ", ".join(sorted(self._ALLOWED_COLORS))
-            raise ValueError(f"Invalid color '{color}'. Allowed values: {allowed}")
+            raise ValueError(
+                f"Invalid color '{color}'. Allowed values: {allowed}, or a #RRGGBB literal"
+            )
         if shape not in self._ALLOWED_SHAPES:
             allowed = ", ".join(sorted(self._ALLOWED_SHAPES))
             raise ValueError(f"Invalid shape '{shape}'. Allowed values: {allowed}")
@@ -2592,6 +2741,16 @@ class IsraelMap:
     @staticmethod
     def _rgb_to_hex(rgb: tuple[int, int, int]) -> str:
         return "#{:02x}{:02x}{:02x}".format(*rgb)
+
+    @staticmethod
+    def _is_hex_color(color: str) -> bool:
+        if not isinstance(color, str) or len(color) != 7 or not color.startswith("#"):
+            return False
+        try:
+            int(color[1:], 16)
+        except ValueError:
+            return False
+        return True
 
 
 if __name__ == "__main__":

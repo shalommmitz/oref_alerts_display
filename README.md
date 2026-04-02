@@ -12,7 +12,7 @@ The goal of this project is fast local response and reduced dependence on third-
 - Decodes BOM-prefixed JSON safely.
 - Resolves alert localities to WGS84 latitude/longitude using a local YAML lookup table.
 - Draws alerts on a local Israel outline image.
-- Optionally auto-zooms to a `2x` localized half-map view when all current non-gray alerts fit in one region.
+- Optionally auto-zooms to a `2x` localized half-map view when all current zoom-participating alerts fit in one region.
 - Supports a non-blocking map API so callers can run their own loop.
 - Includes sample alert payloads and a placeholder reference loop for custom integrations.
 
@@ -27,12 +27,16 @@ The goal of this project is fast local response and reduced dependence on third-
 - `alert_expiry.py`: time-based cleanup for alert markers that should disappear automatically.
 - `alert_history.py`: history replay client for startup catch-up and outage recovery.
 - `alert_model.py`: normalization helpers for live alerts and history rows.
+- `alert_types.py`: YAML-backed alert-type classification and policy loader.
 - `alert_render.py`: alert persistence and drawing helpers.
 - `israel_map.py`: standalone map window and drawing module.
 - `utils.py`: shared helpers, including UI-friendly sleep and locality coordinate loading.
 - `map_reference_usage.py`: placeholder example for integrating a custom `fetch_coords()` loop.
 - `align_map`: interactive helper for collecting true city positions on the outline image for calibration.
 - `alert_example_1.yaml`, `alert_example_2.yaml`: sample alert payloads for local testing.
+- `demo.yaml`: scripted alert sequence used by `Help -> Demo`.
+- `alert_categories.yaml`: single source of truth for alert titles, colors, shapes, legend text, zoom policy, and auto-clear policy.
+- `reference_alert_categories.yaml`: local cache of the official OREF alert-category metadata, kept only as a human reference when updating `alert_categories.yaml`.
 - `localities.yaml`: authoritative source locality dataset.
 - `cities.json`: fallback locality dataset used to fill gaps not present in `localities.yaml`.
 - `locality_latitude_longitude.yaml`: generated locality-to-coordinate lookup table used at runtime.
@@ -109,14 +113,18 @@ What happens:
 - Replay and expiry timing are anchored to `Asia/Jerusalem`, so they do not depend on the consuming machine's local timezone.
 - New alerts are stored in `last_alert.yaml`.
 - Each alerted locality is matched against the local coordinate table and drawn on the map.
+- Alert classification, colors, auto-clear behavior, and localized-zoom participation come from `alert_categories.yaml`.
+- Marker shape also comes from `alert_categories.yaml`; the current known alert titles use `circle`, and the `unknown_title` fallback uses `triangle`.
 - Newly drawn alerts blink for their configured attention duration with a 1-second on / 1-second off cadence, except for history alerts loaded at startup.
 - If a repeated alert keeps a locality in the same alert state, that locality does not restart blinking; only newly added or state-changed localities blink.
 - If a new non-startup alert has 6 or fewer localities and `Show Focus Circle for Small Alerts` is enabled, the app draws a pale-blue focus circle around that alert cluster for the same configured attention duration.
 - Same-state repeat alerts do not raise the window or draw a new focus circle unless at least one mapped locality actually changed alert state.
-- "Event ended" markers are automatically removed 10 minutes after their alert appearance time.
+- Alert categories that declare auto-clear behavior in `alert_categories.yaml` are automatically removed after their configured duration.
+- The lower-right corner shows the original Hebrew title of the most recent alert.
+- If the most recent alert is an auto-clearing release/end alert, that lower-right title is removed when the last marker from that alert disappears.
 - Expired markers are cleared incrementally so large expiry batches do not monopolize the UI thread.
 - The map window exposes a standard top menu inside the canvas: `File`, `Edit`, `Send to Back`, and `Help`.
-- `File` includes `Save`, `Settings`, and `Exit`; `Edit` includes `Clear`; `Send to Back` lowers the map window; `Help` includes `Usage`, `Color Legend`, and `About`.
+- `File` includes `Save`, `Settings`, and `Exit`; `Edit` includes `Clear`; `Send to Back` lowers the map window; `Help` includes `Usage`, `Demo`, `Color Legend`, and `About`.
 - `Edit -> Clear` resets both the visible map and the in-memory alert state, so the next live poll can redraw current alerts and reapply localized zoom if needed.
 - `Settings` stores image-save, alert-notification, and map-display preferences in `settings.yaml`.
 - `Settings` also stores the startup history replay window in minutes; the default is 3 minutes.
@@ -125,8 +133,9 @@ What happens:
 - If `Bring Window to Front` is enabled, non-startup alerts raise the map window above other windows only when at least one locality changes state on the map.
 - If `Play Audible Alert` is enabled, non-startup alerts play `ocean_4s.mp3` only when at least one locality changes state on the map.
 - `Blink New Alerts on Appearing` is enabled by default and can be turned off in Settings.
-- If `Auto Zoom x2 for Localized Alerts` is enabled, the app precomputes three zoomed half-map views at launch and switches to one of them only when newly arrived non-gray alerts all fit in the same region.
-- Gray `Event Ended` markers do not trigger zoom reassessment, and automatic gray-marker expiry does not trigger it either.
+- If `Auto Zoom x2 for Localized Alerts` is enabled, the app precomputes three zoomed half-map views at launch and switches to one of them only when newly arrived zoom-participating alerts all fit in the same region.
+- Alert types whose YAML entry opts out of localized zoom do not trigger zoom reassessment, and their later auto-clear removal does not trigger it either.
+- `Help -> Demo` pauses live polling, changes the status label to `Demo`, plays the alerts from `demo.yaml` one by one with 18 seconds between them, then clears the map, resumes normal operation, and leaves `Demo done` in the lower-right corner until the next real alert replaces it.
 - Clicking inside the map shows the nearest settlement in the upper-left corner and starts a green blink on that locality's exact mapped point; a new click replaces the text but does not cancel older click-highlights that are still blinking.
 - Focus-jump and audible-alert notifications share a 10-second cooldown, so alert bursts do not repeatedly steal focus or replay sound.
 - Clicking inside the map image shows the nearest settlement name and coordinates in a compact upper-left overlay.
@@ -134,14 +143,12 @@ What happens:
 - The coordinates field is selectable for copy, and the `Copy` button copies the coordinates directly.
 - A compact lower-left watchdog shows a pulsing alive icon and `Online` or `Offline`.
 
-Current alert color mapping:
+Alert-type matching is fully driven by `alert_categories.yaml`.
 
-- `cat == "1"` (missile attack) -> `red`
-- `cat == "2"` or `cat == "6"` (UAV / older matrix id 6) -> `purple`
-- title `בדקות הקרובות צפויות להתקבל התרעות באזורך` -> `yellow`
-- title `האירוע הסתיים` -> `gray`
-
-Unknown categories currently cause the script to exit.
+- The top-level YAML structure is a dictionary keyed by the alert `title` values that arrive in the runtime payloads.
+- Adding a new alert type normally means adding a new top-level title entry.
+- `known_cats` is reference metadata only; the runtime classification key is the alert title.
+- `unknown_title` is a special fallback entry used when an alert title is not otherwise listed.
 
 ## Testing With Sample Data
 
@@ -186,8 +193,8 @@ while map_view.is_open():
 
 Supported draw parameters:
 
-- Colors: `white`, `black`, `blue`, `purple`, `red`, `green`, `gray`, `orange`, `background`
-- Shapes: `circle`, `rect`, `square`
+- Colors: `white`, `black`, `blue`, `purple`, `red`, `green`, `gray`, `orange`, `background`, or a literal `#RRGGBB`
+- Shapes: `circle`, `rect`, `square`, `triangle`
 - Size: pixel diameter or width
 - `draw()` now returns the canvas item id for the created marker, which can be passed to `remove_marker()`.
 
@@ -254,6 +261,9 @@ The runtime code expects that generated file to exist in the project directory.
 - The official history endpoint can return HTTP 200 with an empty body when there are no recent rows; the history client treats that as an empty replay list.
 - As observed on March 20, 2026, the official history payload rows had only `alertDate`, `title`, `data`, and `category`, with `data` as a single locality string and yellow pre-alert rows using category `14`.
 - As observed on March 20, 2026, the official `https://www.oref.org.il/alerts/alertCategories.json` metadata mapped category `2` to `uav`, category `13` to `update`, and category `14` to `flash`, all of which are relevant to current runtime payloads.
+- The ground-truth category reference comes from `https://www.oref.org.il/alerts/alertCategories.json` and is cached locally in `reference_alert_categories.yaml`.
+- `reference_alert_categories.yaml` is not used by the runtime code; it exists only to help manually verify and update the authoritative runtime file, `alert_categories.yaml`.
+- In `reference_alert_categories.yaml`, the most relevant fields are `category`, which is the English description, and `matrix_id`, which corresponds to this project's alert `cat` value.
 - OREF `alertDate` values are interpreted in `Asia/Jerusalem`; replay and expiry do not rely on the consuming machine's local timezone.
 - Marker removal inside `IsraelMap` is O(1), and alert expiry is processed in bounded batches to reduce UI freeze risk.
 - The watchdog uses monotonic time, not wall-clock time, so freeze detection is independent of timezone and clock jumps.

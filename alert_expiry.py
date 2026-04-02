@@ -8,11 +8,10 @@ from heapq import heappop, heappush
 from typing import Callable
 
 from alert_model import AlertEvent, current_oref_time, ensure_oref_datetime
-from alert_render import is_event_ended_alert
+from alert_types import AlertTypeInfo
 from israel_map import IsraelMap
 
 
-EVENT_ENDED_TTL = timedelta(minutes=10)
 MAX_EXPIRY_REMOVALS_PER_PASS = 100
 
 
@@ -37,11 +36,13 @@ class AlertExpiryManager:
         alert: AlertEvent,
         marker_ids: list[int],
         *,
+        alert_type: AlertTypeInfo,
         drawn_at: datetime | None = None,
     ) -> None:
-        # 1. Only "event ended" alerts should auto-clear.
+        # 1. Only alert types that declare an auto-clear duration should be
+        #    tracked for time-based removal.
         # 2. All other alert types stay persistent until the user clears the map.
-        if not marker_ids or not is_event_ended_alert(alert):
+        if not marker_ids or alert_type.auto_clear_after_seconds is None:
             return
 
         # 3. Prefer the alert timestamp when replay history provides one so a
@@ -53,7 +54,7 @@ class AlertExpiryManager:
             appeared_at = ensure_oref_datetime(drawn_at)
         if appeared_at is None:
             appeared_at = current_oref_time()
-        expires_at = appeared_at + EVENT_ENDED_TTL
+        expires_at = appeared_at + timedelta(seconds=alert_type.auto_clear_after_seconds)
         for item_id in marker_ids:
             heappush(self._pending, _PendingExpiry(expires_at=expires_at, item_id=item_id))
 
@@ -83,5 +84,5 @@ class AlertExpiryManager:
         # 3. Log only when real marker removals happened so the main loop output
         #    stays quiet during normal polling.
         if cleared_count and log_fn is not None:
-            log_fn(f"Cleared {cleared_count} 10-minutes old ended-alert markers")
+            log_fn(f"Cleared {cleared_count} auto-cleared alert markers")
         return cleared_count
