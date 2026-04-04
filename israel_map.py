@@ -15,6 +15,7 @@ from typing import Callable
 
 from PIL import Image, ImageDraw
 from alert_types import get_alert_type_registry
+from x11_fullscreen_restore import X11FullscreenRestorer
 
 try:
     from bidi.algorithm import get_display as _get_bidi_display
@@ -212,6 +213,7 @@ class IsraelMap:
         self._latest_alert_title_item_ids: set[int] | None = None
         self._watchdog_level = "offline"
         self._watchdog_pulse_on = False
+        self._x11_fullscreen_restorer = X11FullscreenRestorer()
         self._save_include_datetime_var: tk.BooleanVar | None = None
         self._save_base_name_var: tk.StringVar | None = None
         self._save_scale_var: tk.StringVar | None = None
@@ -580,6 +582,12 @@ class IsraelMap:
         if self._closed or not self.root.winfo_exists():
             return
         try:
+            try:
+                self._x11_fullscreen_restorer.note_pre_focus_window(
+                    int(self.root.winfo_id())
+                )
+            except tk.TclError:
+                pass
             self.root.deiconify()
             self.root.lift()
             try:
@@ -605,6 +613,12 @@ class IsraelMap:
             except tk.TclError:
                 pass
             self.root.lower()
+            try:
+                self._x11_fullscreen_restorer.restore_saved_fullscreen_window(
+                    int(self.root.winfo_id())
+                )
+            except tk.TclError:
+                pass
         except tk.TclError:
             return
 
@@ -1061,7 +1075,13 @@ class IsraelMap:
                 if command is None:
                     menu.add_separator()
                 else:
-                    menu.add_command(label=entry_label, command=command)
+                    menu.add_command(
+                        label=entry_label,
+                        command=self._wrap_logged_menu_action(
+                            f"{label} -> {entry_label}",
+                            command,
+                        ),
+                    )
             button.configure(menu=menu)
             button.pack(side="left", padx=(0, 4))
 
@@ -1069,7 +1089,7 @@ class IsraelMap:
             button = tk.Button(
                 menu_frame,
                 text=label,
-                command=command,
+                command=self._wrap_logged_menu_action(label, command),
                 relief="flat",
                 bd=0,
                 padx=10,
@@ -1580,6 +1600,23 @@ class IsraelMap:
 
     def _clear_map_control(self) -> None:
         self.reset(refresh=True)
+
+    def _wrap_logged_menu_action(
+        self,
+        menu_action_label: str,
+        command: Callable[[], None],
+    ) -> Callable[[], None]:
+        # 1. Log every leaf menu action before executing it so a crash after a
+        #    menu click can be correlated with the last user action in `log.txt`.
+        # 2. Import `log` lazily to avoid a module-load cycle because `utils.py`
+        #    imports `IsraelMap` for the UI sleep helper type annotation.
+        def wrapped_command() -> None:
+            from utils import log
+
+            log(f"Menu action: {menu_action_label}")
+            command()
+
+        return wrapped_command
 
     def _start_demo_control(self) -> None:
         # 1. Signal the outer runtime loop instead of trying to run the demo

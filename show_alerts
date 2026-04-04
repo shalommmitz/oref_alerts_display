@@ -240,6 +240,7 @@ def main() -> None:
     if map_view.audible_alert_enabled():
         audio_player.warm_up()
     utils.set_log_time_sink(map_view.set_log_timestamp)
+    log("Application launched")
 
     # 1. Keep the runtime state close to the top-level loop so the main control
     #    flow remains easy to read.
@@ -389,7 +390,7 @@ def main() -> None:
                     if (
                         map_view.small_alert_focus_circle_enabled()
                         and changed_marker_ids
-                        and len(alert.data) <= SMALL_ALERT_FOCUS_CIRCLE_LIMIT
+                        and len(changed_marker_ids) <= SMALL_ALERT_FOCUS_CIRCLE_LIMIT
                         and resolved_points
                     ):
                         focus_circle_manager.remember_points(map_view, resolved_points)
@@ -581,7 +582,7 @@ def main() -> None:
                     and is_new_alert
                     and alert_source != "startup_replay"
                     and has_changed_locality_state
-                    and len(alert.data) <= SMALL_ALERT_FOCUS_CIRCLE_LIMIT
+                    and len(changed_marker_ids) <= SMALL_ALERT_FOCUS_CIRCLE_LIMIT
                     and resolved_points
                 ):
                     pending_focus_circle_points.append(resolved_points)

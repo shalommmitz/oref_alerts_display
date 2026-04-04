@@ -29,6 +29,7 @@ Current repo contents relevant to runtime behavior:
 - `alert_types.py`: YAML-backed alert-type classification and policy loader
 - `alert_render.py`: alert drawing and persistence helpers
 - `israel_map.py`: map rendering module
+- `x11_fullscreen_restore.py`: best-effort X11 helper for restoring the previously fullscreen window after `Send to Back`
 - `utils.py`: shared helpers
 - `map_reference_usage.py`: reference integration loop with placeholder `fetch_coords()`
 - `align_map`: interactive calibration helper for collecting control points on the outline image
@@ -255,8 +256,13 @@ Current menu structure when `show_controls=True`:
 
 - `File` -> `Save`, `Settings`, `Exit`
 - `Edit` -> `Clear`
-- `Send to Back` -> lowers the map window behind other windows
+- `Send to Back` -> lowers the map window behind other windows and, on Linux/X11, tries to restore the previously fullscreen window
 - `Help` -> `Usage`, `Demo`, `Color Legend`, `About`
+
+Menu/log behavior:
+
+- every leaf menu action writes `Menu action: ...` to the log before running
+- startup writes `Application launched` to the log after the UI and log sink are initialized
 
 Current interactive click behavior:
 

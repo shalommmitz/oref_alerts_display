@@ -124,7 +124,8 @@ What happens:
 - If the most recent alert is an auto-clearing release/end alert, that lower-right title is removed when the last marker from that alert disappears.
 - Expired markers are cleared incrementally so large expiry batches do not monopolize the UI thread.
 - The map window exposes a standard top menu inside the canvas: `File`, `Edit`, `Send to Back`, and `Help`.
-- `File` includes `Save`, `Settings`, and `Exit`; `Edit` includes `Clear`; `Send to Back` lowers the map window; `Help` includes `Usage`, `Demo`, `Color Legend`, and `About`.
+- `File` includes `Save`, `Settings`, and `Exit`; `Edit` includes `Clear`; `Send to Back` lowers the map window and, on Linux/X11, tries to restore the previously fullscreen window; `Help` includes `Usage`, `Demo`, `Color Legend`, and `About`.
+- Selecting a leaf menu action writes `Menu action: ...` to the log, and startup writes `Application launched`.
 - `Edit -> Clear` resets both the visible map and the in-memory alert state, so the next live poll can redraw current alerts and reapply localized zoom if needed.
 - `Settings` stores image-save, alert-notification, and map-display preferences in `settings.yaml`.
 - `Settings` also stores the startup history replay window in minutes; the default is 3 minutes.
