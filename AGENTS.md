@@ -258,6 +258,7 @@ Current menu structure when `show_controls=True`:
 - `Edit` -> `Clear`
 - `Send to Back` -> lowers the map window behind other windows and, on Linux/X11, tries to restore the previously fullscreen window
 - `Help` -> `Usage`, `Demo`, `Color Legend`, `About`
+- top-level Alt shortcuts are available: `Alt-F`, `Alt-E`, `Alt-S`, `Alt-H`
 
 Menu/log behavior:
 

@@ -191,6 +191,9 @@ class IsraelMap:
         self._background_image_id: int | None = None
         self._menu_frame: tk.Frame | None = None
         self._menu_window_id: int | None = None
+        self._menu_shortcut_menus: dict[str, tuple[tk.Menubutton, tk.Menu]] = {}
+        self._menu_shortcut_actions: dict[str, tk.Button] = {}
+        self._posted_top_level_menu_key: str | None = None
         self._modal_dialog: tk.Toplevel | None = None
         self._modal_kind: str | None = None
         self._nearest_locality_text: str | None = None
@@ -1039,6 +1042,9 @@ class IsraelMap:
         #    menubuttons inside a slim in-canvas strip.
         colors = self._CONTROL_COLORS
         self.root.configure(menu="")
+        self._menu_shortcut_menus.clear()
+        self._menu_shortcut_actions.clear()
+        self._posted_top_level_menu_key = None
 
         menu_frame = tk.Frame(
             self.canvas,
@@ -1053,10 +1059,12 @@ class IsraelMap:
         def add_menu_button(
             label: str,
             entries: tuple[tuple[str, Callable[[], None] | None], ...],
+            shortcut_key: str,
         ) -> None:
             button = tk.Menubutton(
                 menu_frame,
                 text=label,
+                underline=0,
                 indicatoron=False,
                 relief="flat",
                 bd=0,
@@ -1082,13 +1090,25 @@ class IsraelMap:
                             command,
                         ),
                     )
+            self._bind_top_level_shortcuts_for_widget(button)
+            self._bind_top_level_shortcuts_for_widget(menu)
             button.configure(menu=menu)
             button.pack(side="left", padx=(0, 4))
+            self._menu_shortcut_menus[shortcut_key.lower()] = (button, menu)
+            menu.bind(
+                "<Unmap>",
+                lambda _event, key=shortcut_key.lower(), posted_menu=menu: self._handle_top_level_menu_unmap(
+                    key,
+                    posted_menu,
+                ),
+                add="+",
+            )
 
-        def add_menu_action(label: str, command: Callable[[], None]) -> None:
+        def add_menu_action(label: str, command: Callable[[], None], shortcut_key: str) -> None:
             button = tk.Button(
                 menu_frame,
                 text=label,
+                underline=0,
                 command=self._wrap_logged_menu_action(label, command),
                 relief="flat",
                 bd=0,
@@ -1102,7 +1122,9 @@ class IsraelMap:
                 font=self._STATUS_AND_BUTTON_FONT,
                 takefocus=False,
             )
+            self._bind_top_level_shortcuts_for_widget(button)
             button.pack(side="left", padx=(0, 4))
+            self._menu_shortcut_actions[shortcut_key.lower()] = button
 
         add_menu_button(
             "File",
@@ -1112,14 +1134,16 @@ class IsraelMap:
                 ("", None),
                 ("Exit", self._close_app_control),
             ),
+            "f",
         )
         add_menu_button(
             "Edit",
             (
                 ("Clear", self._clear_map_control),
             ),
+            "e",
         )
-        add_menu_action("Send to Back", self.send_window_to_back)
+        add_menu_action("Send to Back", self.send_window_to_back, "s")
         add_menu_button(
             "Help",
             (
@@ -1128,6 +1152,7 @@ class IsraelMap:
                 ("Color Legend", self._open_color_legend_dialog_control),
                 ("About", self._open_about_dialog_control),
             ),
+            "h",
         )
 
         self._menu_frame = menu_frame
@@ -1138,7 +1163,98 @@ class IsraelMap:
             width=self.width,
             window=menu_frame,
         )
+        self._bind_top_level_shortcuts_for_widget(self.root)
+        self._bind_top_level_shortcuts_for_widget(self.canvas)
         self._raise_overlays()
+
+    def _bind_top_level_shortcuts_for_widget(self, widget: tk.Misc) -> None:
+        # 1. Keep the Alt-key bindings local to the Tk toplevel so the custom
+        #    in-canvas menu behaves like a standard menu bar, including when a
+        #    posted `tk.Menu` currently owns the keyboard grab.
+        # 2. Bind both lowercase and uppercase keysyms because different window
+        #    managers and keyboard layouts may report either form with Alt held.
+        for shortcut_key in ("f", "e", "s", "h"):
+            widget.bind(
+                f"<Alt-KeyPress-{shortcut_key}>",
+                lambda _event, key=shortcut_key: self._handle_top_level_menu_shortcut(key),
+                add="+",
+            )
+            widget.bind(
+                f"<Alt-KeyPress-{shortcut_key.upper()}>",
+                lambda _event, key=shortcut_key: self._handle_top_level_menu_shortcut(key),
+                add="+",
+            )
+
+    def _handle_top_level_menu_shortcut(self, shortcut_key: str) -> str:
+        # 1. Ignore shortcuts while a modal dialog is active so the map does not
+        #    open its main menu behind a grabbed dialog.
+        # 2. Return `break` so the Alt-key press does not propagate into focused
+        #    child widgets such as entry fields.
+        if self._closed or not self.root.winfo_exists():
+            return "break"
+        if self._modal_dialog is not None and self._modal_dialog.winfo_exists():
+            return "break"
+
+        shortcut_key = shortcut_key.lower()
+        menu_entry = self._menu_shortcut_menus.get(shortcut_key)
+        if menu_entry is not None:
+            button, menu = menu_entry
+            if self._posted_top_level_menu_key == shortcut_key and bool(menu.winfo_ismapped()):
+                self._unpost_top_level_menu(menu)
+                return "break"
+            self._post_top_level_menu(button, menu)
+            return "break"
+
+        action_button = self._menu_shortcut_actions.get(shortcut_key)
+        if action_button is not None:
+            action_button.invoke()
+        return "break"
+
+    def _post_top_level_menu(self, button: tk.Menubutton, menu: tk.Menu) -> None:
+        # 1. Post the submenu directly under its menubutton so the keyboard path
+        #    matches the visual placement of the in-canvas menu bar.
+        # 2. Use `post()` instead of `tk_popup()` so the submenu does not keep a
+        #    Tk grab that would swallow the second Alt-key toggle request.
+        try:
+            self._unpost_current_top_level_menu()
+            self.root.focus_force()
+            menu.post(
+                button.winfo_rootx(),
+                button.winfo_rooty() + button.winfo_height(),
+            )
+            for key, menu_entry in self._menu_shortcut_menus.items():
+                if menu_entry[1] is menu:
+                    self._posted_top_level_menu_key = key
+                    break
+        except tk.TclError:
+            return
+
+    def _unpost_current_top_level_menu(self) -> None:
+        posted_menu_key = self._posted_top_level_menu_key
+        if posted_menu_key is None:
+            return
+        menu_entry = self._menu_shortcut_menus.get(posted_menu_key)
+        if menu_entry is None:
+            self._posted_top_level_menu_key = None
+            return
+        self._unpost_top_level_menu(menu_entry[1])
+
+    def _unpost_top_level_menu(self, menu: tk.Menu) -> None:
+        try:
+            menu.unpost()
+        except tk.TclError:
+            pass
+        self._posted_top_level_menu_key = None
+
+    def _handle_top_level_menu_unmap(self, shortcut_key: str, menu: tk.Menu) -> None:
+        if self._posted_top_level_menu_key != shortcut_key:
+            return
+        try:
+            if bool(menu.winfo_ismapped()):
+                return
+        except tk.TclError:
+            pass
+        self._posted_top_level_menu_key = None
 
     def _enable_canvas_lookup(self) -> None:
         # 1. Bind settlement lookup only for the interactive operator-facing

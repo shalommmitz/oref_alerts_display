@@ -125,6 +125,7 @@ What happens:
 - Expired markers are cleared incrementally so large expiry batches do not monopolize the UI thread.
 - The map window exposes a standard top menu inside the canvas: `File`, `Edit`, `Send to Back`, and `Help`.
 - `File` includes `Save`, `Settings`, and `Exit`; `Edit` includes `Clear`; `Send to Back` lowers the map window and, on Linux/X11, tries to restore the previously fullscreen window; `Help` includes `Usage`, `Demo`, `Color Legend`, and `About`.
+- Top-level menu shortcuts are available: `Alt-F`, `Alt-E`, `Alt-S`, and `Alt-H`.
 - Selecting a leaf menu action writes `Menu action: ...` to the log, and startup writes `Application launched`.
 - `Edit -> Clear` resets both the visible map and the in-memory alert state, so the next live poll can redraw current alerts and reapply localized zoom if needed.
 - `Settings` stores image-save, alert-notification, and map-display preferences in `settings.yaml`.
