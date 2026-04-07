@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from time import monotonic
+from typing import TYPE_CHECKING
 
-from israel_map import IsraelMap
+if TYPE_CHECKING:
+    from israel_map import IsraelMap
 
 
 DEFAULT_FOCUS_CIRCLE_COLOR = "#66b2ff"

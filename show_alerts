@@ -433,7 +433,7 @@ def main() -> None:
 
             current_reset_generation = map_view.reset_generation()
             if current_reset_generation != last_reset_generation:
-                # 1. `Edit -> Clear` wipes the canvas immediately, but the main
+                # 1. `View -> Clear` wipes the canvas immediately, but the main
                 #    loop also has to forget known alert ids and locality state
                 #    so the next live poll can repopulate and re-zoom correctly.
                 # 2. Clear the transient managers too so they do not keep stale

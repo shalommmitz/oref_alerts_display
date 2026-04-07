@@ -255,10 +255,10 @@ Marker bookkeeping details:
 Current menu structure when `show_controls=True`:
 
 - `File` -> `Save`, `Settings`, `Exit`
-- `Edit` -> `Clear`
+- `View` -> `Clear`, `Highlight`
 - `Send to Back` -> lowers the map window behind other windows and, on Linux/X11, tries to restore the previously fullscreen window
 - `Help` -> `Usage`, `Demo`, `Color Legend`, `About`
-- top-level Alt shortcuts are available: `Alt-F`, `Alt-E`, `Alt-S`, `Alt-H`
+- top-level Alt shortcuts are available: `Alt-F`, `Alt-V`, `Alt-S`, `Alt-H`
 
 Menu/log behavior:
 
@@ -310,6 +310,13 @@ Current localized zoom behavior:
 - uses all currently visible markers whose YAML entry enables `include_in_localized_zoom` when deciding whether one zoom region contains them all
 - does not reassess zoom for alert types whose YAML entry opts out, including when those markers later auto-clear
 - keeps marker sizes unchanged in pixels while zoomed
+
+Current manual highlight behavior:
+
+- `View -> Highlight` groups the currently active alert markers by spatial proximity, ignoring alert type
+- grouping is based on a lightweight connected-components pass in base-map pixel space rather than on an external ML dependency
+- each detected cluster is circled with the same pale-blue focus-circle style used elsewhere in the UI
+- those manual cluster circles last for the configured `attention_duration_seconds`
 
 Current alert-notification behavior:
 

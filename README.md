@@ -123,11 +123,12 @@ What happens:
 - The lower-right corner shows the original Hebrew title of the most recent alert.
 - If the most recent alert is an auto-clearing release/end alert, that lower-right title is removed when the last marker from that alert disappears.
 - Expired markers are cleared incrementally so large expiry batches do not monopolize the UI thread.
-- The map window exposes a standard top menu inside the canvas: `File`, `Edit`, `Send to Back`, and `Help`.
-- `File` includes `Save`, `Settings`, and `Exit`; `Edit` includes `Clear`; `Send to Back` lowers the map window and, on Linux/X11, tries to restore the previously fullscreen window; `Help` includes `Usage`, `Demo`, `Color Legend`, and `About`.
-- Top-level menu shortcuts are available: `Alt-F`, `Alt-E`, `Alt-S`, and `Alt-H`.
+- The map window exposes a standard top menu inside the canvas: `File`, `View`, `Send to Back`, and `Help`.
+- `File` includes `Save`, `Settings`, and `Exit`; `View` includes `Clear` and `Highlight`; `Send to Back` lowers the map window and, on Linux/X11, tries to restore the previously fullscreen window; `Help` includes `Usage`, `Demo`, `Color Legend`, and `About`.
+- Top-level menu shortcuts are available: `Alt-F`, `Alt-V`, `Alt-S`, and `Alt-H`.
 - Selecting a leaf menu action writes `Menu action: ...` to the log, and startup writes `Application launched`.
-- `Edit -> Clear` resets both the visible map and the in-memory alert state, so the next live poll can redraw current alerts and reapply localized zoom if needed.
+- `View -> Clear` resets both the visible map and the in-memory alert state, so the next live poll can redraw current alerts and reapply localized zoom if needed.
+- `View -> Highlight` groups currently active alert markers by spatial proximity and draws temporary pale-blue cluster circles for the configured attention duration.
 - `Settings` stores image-save, alert-notification, and map-display preferences in `settings.yaml`.
 - `Settings` also stores the startup history replay window in minutes; the default is 3 minutes.
 - `Blink / Focus Duration` controls both the marker-blink duration and the small-alert focus-circle duration; the default is 6 seconds.

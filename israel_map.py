@@ -14,6 +14,12 @@ from time import monotonic
 from typing import Callable
 
 from PIL import Image, ImageDraw
+from alert_focus_circle import (
+    DEFAULT_FOCUS_CIRCLE_COLOR,
+    DEFAULT_FOCUS_CIRCLE_MIN_RADIUS,
+    DEFAULT_FOCUS_CIRCLE_PADDING,
+    DEFAULT_FOCUS_CIRCLE_WIDTH,
+)
 from alert_types import get_alert_type_registry
 from x11_fullscreen_restore import X11FullscreenRestorer
 
@@ -162,6 +168,8 @@ class IsraelMap:
     _LOCALITY_INFO_HIDE_MS = 60_000
     _LOCALITY_INFO_EDGE_MARGIN = 8
     _LOCALITY_INFO_COPY_BUTTON_WIDTH = 5
+    _CLUSTER_HIGHLIGHT_NEAR_DISTANCE_RATIO = 0.09
+    _CLUSTER_HIGHLIGHT_NEAR_DISTANCE_MIN_PX = 28.0
     _STATUS_EDGE_MARGIN = 8
     _STATUS_STACK_GAP = 6
     _STATUS_PANEL_Y_OFFSET = 14
@@ -188,6 +196,7 @@ class IsraelMap:
         self._focus_circle_items: dict[int, _FocusCircleCommand] = {}
         self._click_highlight_items: dict[int, _ClickHighlightState] = {}
         self._hidden_marker_ids: set[int] = set()
+        self._cluster_highlight_circle_item_ids: set[int] = set()
         self._background_image_id: int | None = None
         self._menu_frame: tk.Frame | None = None
         self._menu_window_id: int | None = None
@@ -204,6 +213,7 @@ class IsraelMap:
         self._nearest_locality_overlay_value_entry: tk.Entry | None = None
         self._nearest_locality_overlay_hide_after_id: str | None = None
         self._click_highlight_after_id: str | None = None
+        self._cluster_highlight_after_id: str | None = None
         self._locality_points: list[_LocalityPoint] | None = None
         self._settings_dialog_snapshot: tuple[bool, str, str, bool, bool, bool, str, bool, bool, str] | None = None
         self._log_time_background_id: int | None = None
@@ -513,6 +523,7 @@ class IsraelMap:
 
     def reset(self, refresh: bool | None = None) -> None:
         """Restore the canvas to the original image-only state."""
+        self._clear_cluster_highlights()
         for item_id in tuple(self._drawn_markers):
             self.canvas.delete(item_id)
         for item_id in tuple(self._focus_circle_items):
@@ -573,6 +584,7 @@ class IsraelMap:
             self.root.withdraw()
             self._cancel_nearest_locality_overlay_timer()
             self._cancel_click_highlight_timer()
+            self._cancel_cluster_highlight_timer()
             self.root.after_idle(self._finalize_close)
         except tk.TclError:
             self._finalize_close()
@@ -1137,11 +1149,12 @@ class IsraelMap:
             "f",
         )
         add_menu_button(
-            "Edit",
+            "View",
             (
                 ("Clear", self._clear_map_control),
+                ("Highlight", self._highlight_active_clusters_control),
             ),
-            "e",
+            "v",
         )
         add_menu_action("Send to Back", self.send_window_to_back, "s")
         add_menu_button(
@@ -1173,7 +1186,7 @@ class IsraelMap:
         #    posted `tk.Menu` currently owns the keyboard grab.
         # 2. Bind both lowercase and uppercase keysyms because different window
         #    managers and keyboard layouts may report either form with Alt held.
-        for shortcut_key in ("f", "e", "s", "h"):
+        for shortcut_key in ("f", "v", "s", "h"):
             widget.bind(
                 f"<Alt-KeyPress-{shortcut_key}>",
                 lambda _event, key=shortcut_key: self._handle_top_level_menu_shortcut(key),
@@ -1716,6 +1729,122 @@ class IsraelMap:
 
     def _clear_map_control(self) -> None:
         self.reset(refresh=True)
+
+    def _highlight_active_clusters_control(self) -> None:
+        # 1. Recompute clusters from the markers that are active on the map
+        #    right now, rather than from any historical alert batch metadata.
+        # 2. Use the same pale-blue focus-circle look as the existing alert
+        #    attention circles so the UI stays visually consistent.
+        self._clear_cluster_highlights()
+        clusters = self._cluster_active_marker_points()
+        if not clusters:
+            return
+
+        for cluster_points in clusters:
+            item_id = self.draw_focus_circle(
+                cluster_points,
+                outline_color=DEFAULT_FOCUS_CIRCLE_COLOR,
+                width=DEFAULT_FOCUS_CIRCLE_WIDTH,
+                padding=DEFAULT_FOCUS_CIRCLE_PADDING,
+                min_radius=DEFAULT_FOCUS_CIRCLE_MIN_RADIUS,
+                refresh=False,
+            )
+            self._cluster_highlight_circle_item_ids.add(item_id)
+        self._schedule_cluster_highlight_clear()
+
+    def _cluster_active_marker_points(self) -> list[list[tuple[float, float]]]:
+        # 1. Cluster in base-image coordinates so the grouping stays stable even
+        #    if the operator already switched into a localized zoom view.
+        # 2. A simple connected-components pass is enough here and avoids any
+        #    heavy machine-learning dependency for a small number of markers.
+        marker_points: list[tuple[float, float, float, float]] = []
+        for marker in self._drawn_markers.values():
+            base_x, base_y = self._latlon_to_base_xy(marker.latitude, marker.longitude)
+            marker_points.append((marker.latitude, marker.longitude, base_x, base_y))
+
+        if not marker_points:
+            return []
+
+        distance_threshold = max(
+            self._CLUSTER_HIGHLIGHT_NEAR_DISTANCE_MIN_PX,
+            self._content_width * self._CLUSTER_HIGHLIGHT_NEAR_DISTANCE_RATIO,
+        )
+        distance_threshold_squared = distance_threshold * distance_threshold
+        remaining_indexes = set(range(len(marker_points)))
+        clusters: list[list[tuple[float, float]]] = []
+
+        while remaining_indexes:
+            seed_index = remaining_indexes.pop()
+            component_indexes = [seed_index]
+            pending_indexes = [seed_index]
+
+            while pending_indexes:
+                current_index = pending_indexes.pop()
+                _, _, current_x, current_y = marker_points[current_index]
+                connected_indexes: list[int] = []
+                for other_index in tuple(remaining_indexes):
+                    _, _, other_x, other_y = marker_points[other_index]
+                    dx = other_x - current_x
+                    dy = other_y - current_y
+                    if (dx * dx) + (dy * dy) <= distance_threshold_squared:
+                        connected_indexes.append(other_index)
+
+                for other_index in connected_indexes:
+                    remaining_indexes.discard(other_index)
+                    component_indexes.append(other_index)
+                    pending_indexes.append(other_index)
+
+            clusters.append(
+                [
+                    (marker_points[index][0], marker_points[index][1])
+                    for index in component_indexes
+                ]
+            )
+
+        return clusters
+
+    def _schedule_cluster_highlight_clear(self) -> None:
+        # 1. Keep the manual highlight lifetime aligned with the same Settings
+        #    duration that already controls blink and focus effects elsewhere.
+        # 2. Use one timer for the whole action so repeated View->Highlight
+        #    clicks simply replace the circles and restart the timeout.
+        self._cancel_cluster_highlight_timer()
+        if not self._cluster_highlight_circle_item_ids:
+            return
+        if self._closed or not self.root.winfo_exists():
+            return
+
+        delay_ms = max(100, int(round(self.attention_duration_seconds() * 1000.0)))
+        try:
+            self._cluster_highlight_after_id = self.root.after(
+                delay_ms,
+                self._expire_cluster_highlights,
+            )
+        except tk.TclError:
+            self._cluster_highlight_after_id = None
+
+    def _cancel_cluster_highlight_timer(self) -> None:
+        if self._cluster_highlight_after_id is None:
+            return
+        try:
+            self.root.after_cancel(self._cluster_highlight_after_id)
+        except tk.TclError:
+            pass
+        self._cluster_highlight_after_id = None
+
+    def _expire_cluster_highlights(self) -> None:
+        self._cluster_highlight_after_id = None
+        self._clear_cluster_highlights()
+
+    def _clear_cluster_highlights(self) -> None:
+        # 1. Keep manual cluster circles independent from alert-driven circles
+        #    so the operator can request a fresh grouping at any time.
+        # 2. Removing only the ids created by View->Highlight avoids touching
+        #    the runtime's own temporary focus circles.
+        self._cancel_cluster_highlight_timer()
+        for item_id in list(self._cluster_highlight_circle_item_ids):
+            self.remove_focus_circle(item_id, refresh=False)
+        self._cluster_highlight_circle_item_ids.clear()
 
     def _wrap_logged_menu_action(
         self,
