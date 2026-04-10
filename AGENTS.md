@@ -35,6 +35,9 @@ Current repo contents relevant to runtime behavior:
 - `align_map`: interactive calibration helper for collecting control points on the outline image
 - `convert_localities.py`: one-shot data conversion script
 - `create_venv`: helper script that recreates `venv` and installs repo dependencies
+- `create_venv_windows.cmd`: Windows 11 helper that recreates `venv` with Python 3.13 and installs repo dependencies
+- `run_show_alerts_windows.cmd`: Windows 11 launcher that switches into the repo directory, activates `venv`, and starts the app
+- `show_alerts_windows.cmd`: shorter Windows launcher that delegates to `run_show_alerts_windows.cmd`
 - `demo.yaml`: scripted alert sequence for the in-app demo mode
 - `localities.yaml`: large source dataset of Israeli localities
 - `cities.json`: fallback locality dataset with broader coverage
@@ -504,16 +507,20 @@ Code-level dependencies:
 
 Environment note from current scan:
 
-- in the current shell, `tkinter` and `Pillow` import successfully
-- `requests` and `yaml` do not import in the active Python environment
+- in the project `venv`, `yaml`, `tkinter`, and `Pillow` import successfully
+- in the current system `python3`, `tkinter` and `Pillow` import successfully, but `yaml` does not
 - `pygame` availability was not verified in the active Python environment
 - `tkinter` is an OS-provided module on many systems and should not be treated as a normal pip-installed dependency
-- Python 3.8 and newer are the supported runtime targets; Ubuntu 20.04's default Python 3.8 is an explicit support target
+- the codebase target remains Python 3.8 and newer, but the current recommended installation target is Python 3.13
+- on Windows 11, prefer Python 3.13 specifically because there is a current upstream `pygame` install issue on Windows CPython 3.14
+- as of April 10, 2026, python.org's main latest-release page points to Python 3.14.4, which should not be used for this repository on Windows right now
 
 Implication:
 
 - syntax checks can pass while runtime still fails if dependencies are missing
 - when documenting or packaging this project, list `requests` and `PyYAML` explicitly
+- for this repository, prefer the project `venv` for runtime and GUI verification rather than the system `python3`
+- for Windows setup and launch, use the dedicated `.cmd` scripts instead of the Unix `create_venv` and shell activation flow
 
 ## File Naming
 
@@ -545,6 +552,8 @@ Canonical names in this repository:
 
 - The viewer requires a graphical display to actually show the Tk window.
 - Headless environments need an X server or equivalent display backend.
+- In this Codex environment, Tk rendering under `xvfb-run` works only when the command is run outside the sandbox; sandboxed runs fail at Xvfb socket binding before Python starts.
+- The practical GUI smoke-test command in this environment is `timeout 10s xvfb-run -a -s "-screen 0 1920x1080x24" ./venv/bin/python ...` executed with escalation.
 - Coordinate placement is empirically calibrated to the current image asset, not geodetically accurate.
 - The current transform is fitted from a small calibration sample; adding more interior control points should improve overall placement.
 - History replay accuracy depends on the upstream history endpoint including usable timestamps.
@@ -575,6 +584,11 @@ If dependencies are available, also verify:
 - one startup run that replays the configured startup history window
 - one manual network interruption and recovery check
 - one manual visual check of known reference localities on the map
+
+Headless GUI verification note for this environment:
+
+- prefer `./venv/bin/python` over system `python3`
+- if `xvfb-run` fails with `Cannot establish any listening sockets` or Tk reports `couldn't connect to display`, retry the same command outside the sandbox
 
 ## Suggested Improvement Areas
 

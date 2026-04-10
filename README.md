@@ -43,12 +43,15 @@ The goal of this project is fast local response and reduced dependence on third-
 - `align_map_points.yaml`: generated calibration control points captured with `align_map`.
 - `convert_localities.py`: regenerates `locality_latitude_longitude.yaml` from `localities.yaml`, backfilling missing names from `cities.json`.
 - `create_venv`: recreates the local virtual environment and installs dependencies from `requirements.txt`.
+- `create_venv_windows.cmd`: Windows 11 helper that recreates the local virtual environment with Python 3.13 and installs dependencies.
+- `run_show_alerts_windows.cmd`: Windows 11 launcher that switches into the repo directory, activates the venv, and starts the alert viewer.
+- `show_alerts_windows.cmd`: shorter Windows launcher, intended as the closest analogue to `./show_alerts`.
 - `israel_outline.png`: map background image used by `IsraelMap`.
 - `requirements.txt`: pip-installable Python dependencies.
 
 ## Runtime Requirements
 
-- Python 3.8 or newer.
+- Python 3.13.
 - `requests`
 - `PyYAML`
 - `Pillow`
@@ -66,6 +69,8 @@ python3 -m pip install -r requirements.txt
 
 Notes:
 
+- As of April 10, 2026, the main python.org Windows download page points to Python 3.14.4. For this repository, use Python 3.13 instead.
+- The reason is Windows `pygame`: the current PyPI release is still `pygame 2.6.1`, and there is an open upstream Windows install bug for CPython 3.14 where `py -3.14 -m pip install pygame` fails, while the same report says Python 3.13.9 works.
 - `tkinter` is usually installed through the OS package manager, not `pip`.
 - On Debian/Ubuntu, install it with `sudo apt install python3-tk`.
 - On Fedora, install it with `sudo dnf install python3-tkinter`.
@@ -96,6 +101,49 @@ What `create_venv` does:
 - stops with a clear message if `tkinter` is missing from the OS installation
 
 This is the recommended local setup flow for this repository.
+
+## Windows 11 Quick Start
+
+1. Install Python 3.13 for Windows.
+2. Do not use the current default Python 3.14 download for this project.
+3. Run:
+
+```bat
+create_venv_windows.cmd
+run_show_alerts_windows.cmd
+```
+
+Closest Windows equivalents to the Linux flow:
+
+```bat
+call v.cmd
+python show_alerts
+```
+
+or simply:
+
+```bat
+show_alerts_windows.cmd
+```
+
+What `create_venv_windows.cmd` does:
+
+- requires Python 3.13 through the Windows `py` launcher
+- recreates `venv`
+- writes `v.cmd` as a small activation helper
+- installs from `requirements.txt`
+- verifies that the required Python modules import successfully
+
+What `run_show_alerts_windows.cmd` does:
+
+- changes to the repository drive and directory
+- activates the local `venv`
+- launches `show_alerts` with the venv interpreter
+
+What `show_alerts_windows.cmd` does:
+
+- calls `run_show_alerts_windows.cmd`
+- gives a shorter Windows command name similar in intent to `./show_alerts`
 
 ## Running The Alert Viewer
 
