@@ -48,6 +48,7 @@ The goal of this project is fast local response and reduced dependence on third-
 - `show_alerts_windows.cmd`: shorter Windows launcher, intended as the closest analogue to `./show_alerts`.
 - `israel_outline.png`: map background image used by `IsraelMap`.
 - `requirements.txt`: pip-installable Python dependencies.
+- `apt_requirements.txt`: Ubuntu/apt dependencies used by the Unix setup helper.
 
 ## Runtime Requirements
 
@@ -72,7 +73,7 @@ Notes:
 - As of April 10, 2026, the main python.org Windows download page points to Python 3.14.4. For this repository, use Python 3.13 instead.
 - The reason is Windows `pygame`: the current PyPI release is still `pygame 2.6.1`, and there is an open upstream Windows install bug for CPython 3.14 where `py -3.14 -m pip install pygame` fails, while the same report says Python 3.13.9 works.
 - `tkinter` is usually installed through the OS package manager, not `pip`.
-- On Debian/Ubuntu, install it with `sudo apt install python3-tk`.
+- On Debian/Ubuntu, OS packages used by `create_venv` are listed in `apt_requirements.txt`.
 - On Fedora, install it with `sudo dnf install python3-tkinter`.
 - On Arch, install it with `sudo pacman -S tk`.
 - The map window needs a graphical display. In a headless container or server, you need an X server or equivalent display backend.
@@ -93,12 +94,12 @@ The repository includes a helper script that recreates a local virtual environme
 What `create_venv` does:
 
 - removes any existing `venv`
+- checks OS packages listed in `apt_requirements.txt`
+- runs `apt update` and `apt install` only when one or more listed packages are missing
 - creates a fresh `venv`
 - writes a small helper file `v` containing `. venv/bin/activate`
 - installs from `requirements.txt`
-- verifies that the interpreter is Python 3.8 or newer
-- verifies that the required Python modules import successfully
-- stops with a clear message if `tkinter` is missing from the OS installation
+- runs `pip check`
 
 This is the recommended local setup flow for this repository.
 

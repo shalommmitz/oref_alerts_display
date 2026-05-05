@@ -1,70 +1,243 @@
-#!/usr/bin/env bash
+#!/usr/bin/env python3
 
-set -euo pipefail
+"""Create a local virtual environment from project dependency files.
 
-rm -rf venv
-python3 -m venv venv
-printf '. venv/bin/activate\n' > v
+The script is intentionally project-agnostic:
 
-requirements_file="requirements.txt"
-if [[ ! -f "${requirements_file}" && -f "requirments.txt" ]]; then
-    requirements_file="requirments.txt"
-fi
+* pip packages are read from requirements.txt
+* Ubuntu/apt packages are read from apt_requirements.txt
+* no project-specific imports or package names live in this file
+"""
 
-if [[ ! -f "${requirements_file}" ]]; then
-    echo "No requirements file found." >&2
-    exit 1
-fi
+from __future__ import annotations
 
-./venv/bin/python -m pip install --upgrade pip setuptools wheel
-./venv/bin/python -m pip install -r "${requirements_file}"
-
-./venv/bin/python - <<'PY'
-import importlib
+import argparse
+import os
+import shlex
+import shutil
+import subprocess
 import sys
-from typing import List, Optional
-
-try:
-    from zoneinfo import ZoneInfo
-except ImportError:
-    from backports.zoneinfo import ZoneInfo
+from pathlib import Path
+from typing import Iterable, List, Optional, Sequence, Tuple
 
 
-def check_import(module_name: str) -> Optional[str]:
-    try:
-        importlib.import_module(module_name)
-    except Exception as exc:
-        return f"{module_name}: {exc}"
-    return None
+PROJECT_DIR = Path(__file__).resolve().parent
 
 
-if sys.version_info < (3, 8):
-    print("Python 3.8 or newer is required.", file=sys.stderr)
-    sys.exit(1)
+class SetupError(RuntimeError):
+    """Raised when the setup cannot continue."""
 
 
-errors: List[str] = []
-for module_name in ("yaml", "requests", "PIL", "pygame", "bidi", "tkinter"):
-    error = check_import(module_name)
-    if error is not None:
-        errors.append(error)
+def project_path(value: str) -> Path:
+    path = Path(value).expanduser()
+    if path.is_absolute():
+        return path
+    return PROJECT_DIR / path
 
-try:
-    ZoneInfo("Asia/Jerusalem")
-except Exception as exc:
-    errors.append(f"zoneinfo Asia/Jerusalem: {exc}")
 
-if errors:
-    print("Dependency check failed after creating the virtual environment.", file=sys.stderr)
-    for error in errors:
-        print(f"  - {error}", file=sys.stderr)
-    if any(error.startswith("tkinter:") for error in errors):
-        print(
-            "tkinter must usually be installed by the OS package manager "
-            "(for example: python3-tk on Debian/Ubuntu).",
-            file=sys.stderr,
+def read_requirement_lines(path: Path) -> List[str]:
+    if not path.exists():
+        return []
+
+    requirements: List[str] = []
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if " #" in line:
+            line = line.split(" #", 1)[0].strip()
+        if line:
+            requirements.append(line)
+    return requirements
+
+
+def unique_preserving_order(values: Iterable[str]) -> List[str]:
+    seen = set()
+    result: List[str] = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        result.append(value)
+    return result
+
+
+def split_apt_package_spec(package_spec: str) -> Tuple[str, Optional[str]]:
+    """Return the package name and exact version requested by an apt spec."""
+    token = package_spec.split()[0]
+    package_part, separator, version = token.partition("=")
+    package_name = package_part.split("/", 1)[0]
+    return package_name, version if separator else None
+
+
+def is_apt_package_installed(package_spec: str) -> bool:
+    package_name, required_version = split_apt_package_spec(package_spec)
+    result = subprocess.run(
+        ["dpkg-query", "-W", "-f=${Status}\t${Version}", package_name],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return False
+
+    status, _, installed_version = result.stdout.strip().partition("\t")
+    if status != "install ok installed":
+        return False
+    if required_version is not None and installed_version != required_version:
+        return False
+    return True
+
+
+def command_display(command: Sequence[str]) -> str:
+    return " ".join(shlex.quote(part) for part in command)
+
+
+def run_command(command: Sequence[str]) -> None:
+    print(f"$ {command_display(command)}")
+    subprocess.run(command, check=True)
+
+
+def sudo_prefix() -> List[str]:
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        return []
+    sudo = shutil.which("sudo")
+    if sudo is None:
+        raise SetupError(
+            "Missing apt packages require elevated privileges, but sudo was not found. "
+            "Install them manually or rerun this script as root."
         )
-    sys.exit(1)
+    return [sudo]
 
-print("Virtual environment is ready.")
-PY
+
+def install_apt_requirements(path: Path, dry_run: bool) -> None:
+    packages = unique_preserving_order(read_requirement_lines(path))
+    if not packages:
+        if path.exists():
+            print(f"No apt packages listed in {path.name}.")
+        else:
+            print(f"No {path.name} found; skipping apt package installation.")
+        return
+
+    missing = [package for package in packages if not is_apt_package_installed(package)]
+    if not missing:
+        print("All apt packages are already installed.")
+        return
+
+    print("Missing apt packages:")
+    for package in missing:
+        print(f"  - {package}")
+
+    if dry_run:
+        print("Dry run: apt update/install was not run.")
+        return
+
+    apt = shutil.which("apt")
+    if apt is None:
+        raise SetupError("apt was not found. This script assumes Ubuntu or another apt-based system.")
+
+    prefix = sudo_prefix()
+    run_command(prefix + [apt, "update"])
+    run_command(prefix + [apt, "install", "-y", *missing])
+
+
+def import_venv_module():
+    try:
+        import venv
+    except ImportError as exc:
+        raise SetupError(
+            "Python's venv module is unavailable. Add the appropriate Ubuntu package "
+            "to apt_requirements.txt and rerun this script."
+        ) from exc
+    return venv
+
+
+def create_virtualenv(venv_dir: Path, dry_run: bool) -> Path:
+    if dry_run:
+        print(f"Dry run: would recreate virtual environment at {venv_dir}.")
+        return venv_dir / "bin" / "python"
+
+    if venv_dir.exists():
+        if not venv_dir.is_dir():
+            raise SetupError(f"Cannot replace {venv_dir}: it exists and is not a directory.")
+        shutil.rmtree(venv_dir)
+
+    venv = import_venv_module()
+    builder = venv.EnvBuilder(with_pip=True)
+    builder.create(venv_dir)
+    return venv_dir / "bin" / "python"
+
+
+def install_pip_requirements(python_executable: Path, requirements_file: Path, dry_run: bool) -> None:
+    if not requirements_file.exists():
+        print(f"No {requirements_file.name} found; skipping pip package installation.")
+        return
+
+    if dry_run:
+        print(f"Dry run: would install pip packages from {requirements_file}.")
+        return
+
+    run_command([str(python_executable), "-m", "pip", "install", "-r", str(requirements_file)])
+    run_command([str(python_executable), "-m", "pip", "check"])
+
+
+def write_activation_helper(helper_path: Path, venv_dir: Path, dry_run: bool) -> None:
+    try:
+        activation_path = (venv_dir / "bin" / "activate").relative_to(helper_path.parent)
+    except ValueError:
+        activation_path = venv_dir / "bin" / "activate"
+
+    content = f". {shlex.quote(str(activation_path))}\n"
+    if dry_run:
+        print(f"Dry run: would write activation helper {helper_path}.")
+        return
+
+    helper_path.write_text(content, encoding="utf-8")
+
+
+def parse_args(argv: Sequence[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Create a Python virtual environment and install apt/pip requirements."
+    )
+    parser.add_argument("--venv", default="venv", help="virtual environment directory")
+    parser.add_argument("--requirements", default="requirements.txt", help="pip requirements file")
+    parser.add_argument(
+        "--apt-requirements",
+        default="apt_requirements.txt",
+        help="Ubuntu/apt requirements file",
+    )
+    parser.add_argument("--activation-helper", default="v", help="file that activates the venv")
+    parser.add_argument("--skip-apt", action="store_true", help="skip apt package handling")
+    parser.add_argument("--skip-pip", action="store_true", help="skip pip package installation")
+    parser.add_argument("--dry-run", action="store_true", help="show actions without changing the system")
+    return parser.parse_args(argv)
+
+
+def main(argv: Sequence[str]) -> int:
+    args = parse_args(argv)
+    venv_dir = project_path(args.venv)
+    requirements_file = project_path(args.requirements)
+    apt_requirements_file = project_path(args.apt_requirements)
+    activation_helper = project_path(args.activation_helper)
+
+    try:
+        if not args.skip_apt:
+            install_apt_requirements(apt_requirements_file, args.dry_run)
+
+        python_executable = create_virtualenv(venv_dir, args.dry_run)
+
+        if not args.skip_pip:
+            install_pip_requirements(python_executable, requirements_file, args.dry_run)
+
+        write_activation_helper(activation_helper, venv_dir, args.dry_run)
+    except (OSError, subprocess.CalledProcessError, SetupError) as exc:
+        print(f"create_venv failed: {exc}", file=sys.stderr)
+        return 1
+
+    print("Virtual environment is ready.")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

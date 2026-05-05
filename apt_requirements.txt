@@ -1,0 +1,4 @@
+# Ubuntu/apt packages required before Python packages are installed.
+# One package per line. Blank lines and comments are ignored.
+python3-venv
+python3-tk
